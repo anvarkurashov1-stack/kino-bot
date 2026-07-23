@@ -13,7 +13,7 @@ MAIN_CHANNEL_ID = "@uzkinomarket"
 TELEGRAM_LINK = "https://t.me/uzkinomarket"
 INSTAGRAM_LINK = "https://www.instagram.com/uzkinomarket?igsh=MzBtY2t0YzhzMm55"
 
-# Admin ID si (faqat siz kinolarni botga tashlab bazaga qo'sha olasiz)
+# Admin ID si
 ADMIN_ID = 5114804565
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -62,20 +62,6 @@ def init_db():
 
 init_db()
 
-def add_movie_to_db(code, title, caption, file_id, genre):
-    conn = sqlite3.connect("movies.db", check_same_thread=False)
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
-            INSERT OR REPLACE INTO movies (code, title, caption, file_id, genre)
-            VALUES (?, ?, ?, ?, ?)
-        """, (code, title, caption, file_id, genre))
-        conn.commit()
-    except Exception as e:
-        print("DB Error:", e)
-    finally:
-        conn.close()
-
 def get_movie_by_code(code):
     conn = sqlite3.connect("movies.db", check_same_thread=False)
     cursor = conn.cursor()
@@ -112,7 +98,7 @@ def sub_keyboard():
     return markup
 
 # ==========================================
-# 4. ADMIN TOMONIDAN KINONI BINDAGI CHATGA TASHLASH ORQALI QO'SHISH
+# 4. ADMIN KINONI BOTGA TASHLASH ORQALI QO'SHISHI
 # ==========================================
 @bot.message_handler(content_types=['video'])
 def handle_direct_video(message):
@@ -123,33 +109,39 @@ def handle_direct_video(message):
     caption = message.caption if message.caption else "Kino"
     file_id = message.video.file_id
 
-    # Kod generatsiya qilish
     conn = sqlite3.connect("movies.db", check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM movies")
-    count = cursor.fetchone()[0]
-    code = str(count + 1)
-    conn.close()
+    try:
+        # Eng oxirgi ID raqamni topib, unga 1 qo'shamiz (kodlar ketma-ket chiqishi uchun)
+        cursor.execute("SELECT MAX(id) FROM movies")
+        res = cursor.fetchone()[0]
+        count = res if res else 0
+        code = str(count + 1)
 
-    # Janrni aniqlash
-    detected_genre = "#boshqa"
-    for key in GENRES.keys():
-        if key in caption.lower():
-            detected_genre = key
-            break
+        detected_genre = "#boshqa"
+        for key in GENRES.keys():
+            if key in caption.lower():
+                detected_genre = key
+                break
 
-    # Kino nomini olish (birinchi qator)
-    lines = caption.split('\n')
-    title = lines[0].replace("🎬 Kino:", "").strip() if lines else "Kino"
+        lines = caption.split('\n')
+        title = lines[0].replace("🎬 Kino:", "").strip() if lines else "Kino"
 
-    # Bazaga qo'shish
-    add_movie_to_db(code, title, caption, file_id, detected_genre)
+        cursor.execute("""
+            INSERT INTO movies (code, title, caption, file_id, genre)
+            VALUES (?, ?, ?, ?, ?)
+        """, (code, title, caption, file_id, detected_genre))
+        conn.commit()
 
-    bot.reply_to(
-        message,
-        f"✅ Kino bazaga muvaffaqiyatli qo'shildi!\n🔑 Kino kodi: <code>{code}</code>",
-        parse_mode="HTML"
-    )
+        bot.reply_to(
+            message,
+            f"✅ Kino bazaga muvaffaqiyatli qo'shildi!\n🔑 Kino kodi: <code>{code}</code>",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        bot.reply_to(message, f"❌ Xatolik yuz berdi: {e}")
+    finally:
+        conn.close()
 
 # ==========================================
 # 5. SALOMLASHISH VA ASOSIY MENYU
@@ -228,7 +220,7 @@ def all_movies_info(message):
     if not check_subscription(user_id):
         bot.send_message(message.chat.id, "Iltimos, avval sahifalarimizga obuna bo'ling:", reply_markup=sub_keyboard())
         return
-    bot.send_message(message.chat.id, "🎬 Kino olish uchun kanaldan olingan raqamli kodni (masalan: 1, 2, 3...) yuboring.")
+    bot.send_message(message.chat.id, "🎬 Kino olish uchun bazadagi raqamli kodni (masalan: 1, 2, 3...) yuboring.")
 
 @bot.message_handler(func=lambda message: message.text == "🌤 Ob-havo")
 def get_weather(message):
@@ -275,6 +267,5 @@ def find_movie(message):
     else:
         bot.send_message(message.chat.id, "❌ Bunday kodli kino topilmadi. Iltimos, to'g'ri kod kiriting.")
 
-if __name__ == "__main__":
-    print("Bot ishga tushdi...")
-    bot.infinity_polling()
+print("Bot ishga tushdi...")
+bot.infinity_polling()
