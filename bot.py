@@ -1,5 +1,7 @@
+from datetime import datetime
 import sqlite3
 import requests
+import pytz
 import telebot
 from telebot import types
 
@@ -8,17 +10,15 @@ from telebot import types
 # ==========================================
 BOT_TOKEN = "8570550365:AAEB1BZm-Sb8xNIzhd8WObvyT0TcKgm0_OI"
 
-# Majburiy obuna kanali va havolalar
 MAIN_CHANNEL_ID = "@uzkinomarket"
 TELEGRAM_LINK = "https://t.me/uzkinomarket"
 INSTAGRAM_LINK = "https://www.instagram.com/uzkinomarket?igsh=MzBtY2t0YzhzMm55"
+ADMIN_USERNAME = "@Uzkinomarket_admin"
 
-# Admin ID si
 ADMIN_ID = 5114804565
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# 19 ta janr ro'yxati
 GENRES = {
     "#jangari": "Jangari",
     "#drama": "Drama",
@@ -79,7 +79,7 @@ def get_movies_by_genre(genre_key):
     return rows
 
 # ==========================================
-# 3. MAJBURIY OBUNANI TEKSHIRISH
+# 3. MAJBURIY OBUNA VA OB-HAVO
 # ==========================================
 def check_subscription(user_id):
     try:
@@ -97,8 +97,19 @@ def sub_keyboard():
     markup.add(types.InlineKeyboardButton("✅ Obunani tekshirish", callback_data="check_sub"))
     return markup
 
+def get_tashkent_weather():
+    try:
+        url = "https://wttr.in/Tashkent?format=%C+%t&lang=uz"
+        headers = {'User-Agent': 'curl'}
+        response = requests.get(url, headers=headers, timeout=5)
+        if response.status_code == 200 and response.text.strip():
+            return response.text.strip()
+    except Exception:
+        pass
+    return "Ma'lumot olish imkoni bo'lmadi"
+
 # ==========================================
-# 4. ADMIN KINONI BOTGA TASHLASH ORQALI QO'SHISHI
+# 4. ADMIN KINONI QO'SHISHI
 # ==========================================
 @bot.message_handler(content_types=['video'])
 def handle_direct_video(message):
@@ -112,7 +123,6 @@ def handle_direct_video(message):
     conn = sqlite3.connect("movies.db", check_same_thread=False)
     cursor = conn.cursor()
     try:
-        # Eng oxirgi ID raqamni topib, unga 1 qo'shamiz (kodlar ketma-ket chiqishi uchun)
         cursor.execute("SELECT MAX(id) FROM movies")
         res = cursor.fetchone()[0]
         count = res if res else 0
@@ -144,7 +154,7 @@ def handle_direct_video(message):
         conn.close()
 
 # ==========================================
-# 5. SALOMLASHISH VA ASOSIY MENYU
+# 5. /START VA ASOSIY MENYU
 # ==========================================
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -158,15 +168,30 @@ def send_welcome(message):
         )
         return
 
+    first_name = message.from_user.first_name if message.from_user.first_name else "Foydalanuvchi"
+    username = f"@{message.from_user.username}" if message.from_user.username else "Mavjud emas"
+
+    # O'zbekiston vaqti (Tashkent vaqt mintaqasi)
+    tz = pytz.timezone('Asia/Tashkent')
+    current_time = datetime.now(tz).strftime("%d.%m.%Y | %H:%M")
+
+    # Ob-havo
+    weather = get_tashkent_weather()
+
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row("🎬 Kinolar", "📂 Janrlar")
-    markup.row("🌤 Ob-havo", "ℹ️ Ma'lumot")
+    markup.row("📂 Janrlar", "📢 Reklama")
+
+    welcome_text = (
+        f"Assalomu alaykum, **{first_name}**! 👋\n"
+        f"👤 Nickname: {username}\n\n"
+        f"🇺🇿 Toshkent vaqti: {current_time}\n"
+        f"🌤 Toshkent ob-havosi: {weather}\n\n"
+        f"🎬 Kino qidirish uchun shunchaki kanalimizdan olingan raqamli kodni yuboring yoki quyidagi tugmadan foydalaning:"
+    )
 
     bot.send_message(
         message.chat.id,
-        f"Assalomu alaykum, **{message.from_user.first_name}**! 👋\n\n"
-        f"🎬 Kino qidirish botiga xush kelibsiz.\n"
-        f"Kerakli kino kodini yuboring yoki pastdagi menyulardan foydalaning:",
+        welcome_text,
         reply_markup=markup,
         parse_mode="Markdown"
     )
@@ -214,42 +239,22 @@ def callback_genre(call):
 
     bot.send_message(call.message.chat.id, text, parse_mode="HTML")
 
-@bot.message_handler(func=lambda message: message.text == "🎬 Kinolar")
-def all_movies_info(message):
+@bot.message_handler(func=lambda message: message.text == "📢 Reklama")
+def ad_info(message):
     user_id = message.from_user.id
     if not check_subscription(user_id):
         bot.send_message(message.chat.id, "Iltimos, avval sahifalarimizga obuna bo'ling:", reply_markup=sub_keyboard())
         return
-    bot.send_message(message.chat.id, "🎬 Kino olish uchun bazadagi raqamli kodni (masalan: 1, 2, 3...) yuboring.")
-
-@bot.message_handler(func=lambda message: message.text == "🌤 Ob-havo")
-def get_weather(message):
-    user_id = message.from_user.id
-    if not check_subscription(user_id):
-        bot.send_message(message.chat.id, "Iltimos, avval sahifalarimizga obuna bo'ling:", reply_markup=sub_keyboard())
-        return
-    try:
-        url = f"https://wttr.in/Tashkent?format=3&lang=uz"
-        response = requests.get(url)
-        weather_text = response.text if response.status_code == 200 else "Ob-havo ma'lumotini olishda xatolik yuz berdi."
-    except Exception:
-        weather_text = "Ob-havo xizmati vaqtincha ishlamayapti."
-
-    bot.send_message(message.chat.id, f"🌤 Hozirgi ob-havo:\n{weather_text}")
-
-@bot.message_handler(func=lambda message: message.text == "ℹ️ Ma'lumot")
-def info_bot(message):
-    user_id = message.from_user.id
-    if not check_subscription(user_id):
-        bot.send_message(message.chat.id, "Iltimos, avval sahifalarimizga obuna bo'ling:", reply_markup=sub_keyboard())
-        return
-    bot.send_message(
-        message.chat.id,
-        f"🤖 Bu bot yuborgan kinolaringizni avtomatik kodlab bazaga saqlaydi va foydalanuvchilarga taqdim etadi.\n\n"
-        f"📢 Bizning sahifalarimiz:\n"
+    
+    ad_text = (
+        f"📢 **Reklama berish uchun:**\n"
+        f"Agar botimizda o'z reklamangizni joylashtirmoqchi bo'lsangiz, quyidagi manzilga murojaat qiling:\n"
+        f"👉 Murojaat uchun: {ADMIN_USERNAME}\n\n"
+        f"🌐 **Bizning sahifalarimiz:**\n"
         f"• Telegram: {TELEGRAM_LINK}\n"
         f"• Instagram: {INSTAGRAM_LINK}"
     )
+    bot.send_message(message.chat.id, ad_text, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: True)
 def find_movie(message):
