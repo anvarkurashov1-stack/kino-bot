@@ -10,6 +10,9 @@ from telebot import types
 # ==========================================
 BOT_TOKEN = "8570550365:AAEB1BZm-Sb8xNIzhd8WObvyT0TcKgm0_OI"
 
+# O'zingizdagi OpenWeatherMap API kalitini shu yerga yozing:
+WEATHER_API_KEY = "AZ_API_KALITINGIZNI_SHU_YERGA_YOZING" 
+
 MAIN_CHANNEL_ID = "@uzkinomarket"
 TELEGRAM_LINK = "https://t.me/uzkinomarket"
 INSTAGRAM_LINK = "https://www.instagram.com/uzkinomarket?igsh=MzBtY2t0YzhzMm55"
@@ -79,7 +82,7 @@ def get_movies_by_genre(genre_key):
     return rows
 
 # ==========================================
-# 3. MAJBURIY OBUNA VA OB-HAVO
+# 3. MAJBURIY OBUNA VA ANIQ OB-HAVO
 # ==========================================
 def check_subscription(user_id):
     try:
@@ -99,13 +102,15 @@ def sub_keyboard():
 
 def get_tashkent_weather():
     try:
-        url = "https://wttr.in/Tashkent?format=%C+%t&lang=uz"
-        headers = {'User-Agent': 'curl'}
-        response = requests.get(url, headers=headers, timeout=5)
-        if response.status_code == 200 and response.text.strip():
-            return response.text.strip()
-    except Exception:
-        pass
+        url = f"https://api.openweathermap.org/data/2.5/weather?q=Tashkent&units=metric&appid={WEATHER_API_KEY}&lang=uz"
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            temp = round(data['main']['temp'])
+            description = data['weather'][0]['description'].capitalize()
+            return f"{description}, {temp}°C"
+    except Exception as e:
+        print("Ob-havo xatolik:", e)
     return "Ma'lumot olish imkoni bo'lmadi"
 
 # ==========================================
@@ -169,7 +174,7 @@ def send_welcome(message):
         return
 
     first_name = message.from_user.first_name if message.from_user.first_name else "Foydalanuvchi"
-    username = f"@{message.from_user.username}" if message.from_user.username else "Mavjud emas"
+    username = f" (@{message.from_user.username})" if message.from_user.username else ""
 
     # O'zbekiston vaqti (Tashkent vaqt mintaqasi)
     tz = pytz.timezone('Asia/Tashkent')
@@ -182,8 +187,7 @@ def send_welcome(message):
     markup.row("📂 Janrlar", "📢 Reklama")
 
     welcome_text = (
-        f"Assalomu alaykum, **{first_name}**! 👋\n"
-        f"👤 Nickname: {username}\n\n"
+        f"Assalomu alaykum, **{first_name}{username}**! 👋\n\n"
         f"🇺🇿 Toshkent vaqti: {current_time}\n"
         f"🌤 Toshkent ob-havosi: {weather}\n\n"
         f"🎬 Kino qidirish uchun shunchaki kanalimizdan olingan raqamli kodni yuboring yoki quyidagi tugmadan foydalaning:"
@@ -241,11 +245,6 @@ def callback_genre(call):
 
 @bot.message_handler(func=lambda message: message.text == "📢 Reklama")
 def ad_info(message):
-    user_id = message.from_user.id
-    if not check_subscription(user_id):
-        bot.send_message(message.chat.id, "Iltimos, avval sahifalarimizga obuna bo'ling:", reply_markup=sub_keyboard())
-        return
-    
     ad_text = (
         f"📢 **Reklama berish uchun:**\n"
         f"Agar botimizda o'z reklamangizni joylashtirmoqchi bo'lsangiz, quyidagi manzilga murojaat qiling:\n"
