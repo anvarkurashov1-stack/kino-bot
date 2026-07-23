@@ -1,25 +1,19 @@
 import sqlite3
 import requests
-import pytz
 import telebot
 from telebot import types
-from datetime import datetime
 
 # ==========================================
 # 1. SOZLAMALAR
 # ==========================================
 BOT_TOKEN = "8570550365:AAEB1BZm-Sb8xNIzhd8WObvyT0TcKgm0_OI"
-STORAGE_CHANNEL_ID = -1004460317
-
-# Ob-havo API kaliti
-WEATHER_API_KEY = "f6d4de7aafaecad64"
 
 # Majburiy obuna kanali va havolalar
 MAIN_CHANNEL_ID = "@uzkinomarket"
 TELEGRAM_LINK = "https://t.me/uzkinomarket"
 INSTAGRAM_LINK = "https://www.instagram.com/uzkinomarket?igsh=MzBtY2t0YzhzMm55"
 
-# Admin ID si
+# Admin ID si (faqat siz kinolarni botga tashlab bazaga qo'sha olasiz)
 ADMIN_ID = 5114804565
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -118,43 +112,44 @@ def sub_keyboard():
     return markup
 
 # ==========================================
-# 4. KANALDAN VIDEOLARNI QABUL QILISH
+# 4. ADMIN TOMONIDAN KINONI BINDAGI CHATGA TASHLASH ORQALI QO'SHISH
 # ==========================================
-@bot.channel_post_handler(content_types=['video'])
-def handle_channel_video(message):
-    if message.chat.id == STORAGE_CHANNEL_ID:
-        caption = message.caption if message.caption else "Kino"
-        file_id = message.video.file_id
+@bot.message_handler(content_types=['video'])
+def handle_direct_video(message):
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "Kechirasiz, bu funksiya faqat admin uchun.")
+        return
 
-        # Kod generatsiya qilish
-        conn = sqlite3.connect("movies.db", check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM movies")
-        count = cursor.fetchone()[0]
-        code = str(count + 1)
-        conn.close()
+    caption = message.caption if message.caption else "Kino"
+    file_id = message.video.file_id
 
-        # Janrni aniqlash
-        detected_genre = "#boshqa"
-        for key in GENRES.keys():
-            if key in caption.lower():
-                detected_genre = key
-                break
+    # Kod generatsiya qilish
+    conn = sqlite3.connect("movies.db", check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM movies")
+    count = cursor.fetchone()[0]
+    code = str(count + 1)
+    conn.close()
 
-        # Kino nomini olish (birinchi qator)
-        lines = caption.split('\n')
-        title = lines[0].replace("🎬 Kino:", "").strip() if lines else "Kino"
+    # Janrni aniqlash
+    detected_genre = "#boshqa"
+    for key in GENRES.keys():
+        if key in caption.lower():
+            detected_genre = key
+            break
 
-        # Bazaga qo'shish
-        add_movie_to_db(code, title, caption, file_id, detected_genre)
+    # Kino nomini olish (birinchi qator)
+    lines = caption.split('\n')
+    title = lines[0].replace("🎬 Kino:", "").strip() if lines else "Kino"
 
-        # Kanalga kodni yuborish
-        bot.send_message(
-            STORAGE_CHANNEL_ID,
-            f"✅ Kino bazaga qo'shildi!\n🔑 Kino kodi: <code>{code}</code>",
-            parse_mode="HTML",
-            reply_to_message_id=message.message_id
-        )
+    # Bazaga qo'shish
+    add_movie_to_db(code, title, caption, file_id, detected_genre)
+
+    bot.reply_to(
+        message,
+        f"✅ Kino bazaga muvaffaqiyatli qo'shildi!\n🔑 Kino kodi: <code>{code}</code>",
+        parse_mode="HTML"
+    )
 
 # ==========================================
 # 5. SALOMLASHISH VA ASOSIY MENYU
@@ -258,7 +253,7 @@ def info_bot(message):
         return
     bot.send_message(
         message.chat.id,
-        f"🤖 Bu bot yopiq kanaldagi kinolarni avtomatik tarzda kodlab bazaga saqlaydi va foydalanuvchilarga taqdim etadi.\n\n"
+        f"🤖 Bu bot yuborgan kinolaringizni avtomatik kodlab bazaga saqlaydi va foydalanuvchilarga taqdim etadi.\n\n"
         f"📢 Bizning sahifalarimiz:\n"
         f"• Telegram: {TELEGRAM_LINK}\n"
         f"• Instagram: {INSTAGRAM_LINK}"
@@ -280,5 +275,6 @@ def find_movie(message):
     else:
         bot.send_message(message.chat.id, "❌ Bunday kodli kino topilmadi. Iltimos, to'g'ri kod kiriting.")
 
-print("Bot ishga tushdi...")
-bot.infinity_polling()
+if __name__ == "__main__":
+    print("Bot ishga tushdi...")
+    bot.infinity_polling()
