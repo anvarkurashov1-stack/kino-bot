@@ -11,7 +11,7 @@ from telebot import types
 # ==========================================
 # 1. SOZLAMALAR
 # ==========================================
-BOT_TOKEN = "8570550365:AAEB1BZm-Sb8xNIzhd8WObvyT0TcKgm0_OI"
+BOT_TOKEN = "8570550365:AAEgMz6KRm8vYZOqtBDZAMxbnJvRD-oIbXI"
 WEATHER_API_KEY = "F6d4de7aafaecad64a98ca68a9f944be"
 
 MAIN_CHANNEL_ID = "@uzkinomarket"
