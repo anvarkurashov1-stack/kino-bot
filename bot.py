@@ -11,10 +11,9 @@ from telebot import types
 # ==========================================
 # 1. SOZLAMALAR
 # ==========================================
-BOT_TOKEN = "8570550365:AAEgMz6KRm8vYZOqtBDZAMxbnJvRD-oIbXI"
+BOT_TOKEN = "8570550365:AAEB1BZm-Sb8xNIzhd8WObvyT0TcKgm0_OI"
 WEATHER_API_KEY = "F6d4de7aafaecad64a98ca68a9f944be"
 
-MAIN_CHANNEL_ID = "@uzkinomarket"
 TELEGRAM_LINK = "https://t.me/uzkinomarket"
 INSTAGRAM_LINK = "https://www.instagram.com/uzkinomarket?igsh=MzBtY2t0YzhzMm55"
 ADMIN_USERNAME = "@Uzkinomarket_admin"
@@ -106,36 +105,6 @@ def get_movies_by_genre(genre_key):
   return rows
 
 
-def check_subscription(user_id):
-  try:
-    member = bot.get_chat_member(MAIN_CHANNEL_ID, user_id)
-    if member.status in ["member", "administrator", "creator"]:
-      return True
-  except Exception as e:
-    print("Obunani tekshirishda xatolik:", e)
-  return False
-
-
-def sub_keyboard():
-  markup = types.InlineKeyboardMarkup()
-  markup.add(
-      types.InlineKeyboardButton(
-          "📢 Telegram kanalga obuna", url=TELEGRAM_LINK
-      )
-  )
-  markup.add(
-      types.InlineKeyboardButton(
-          "📸 Instagram sahifaga obuna", url=INSTAGRAM_LINK
-      )
-  )
-  markup.add(
-      types.InlineKeyboardButton(
-          "✅ Obunani tekshirish", callback_data="check_sub"
-      )
-  )
-  return markup
-
-
 def get_tashkent_weather():
   try:
     url = f"https://api.openweathermap.org/data/2.5/weather?q=Tashkent&units=metric&appid={WEATHER_API_KEY}&lang=uz"
@@ -187,8 +156,7 @@ def handle_direct_video(message):
 
     bot.reply_to(
         message,
-        f"✅ Kino bazaga muvaffaqiyatli qo'shildi!\n🔑 Kino kodi:"
-        f" <code>{code}</code>",
+        f"✅ Kino bazaga muvaffaqiyatli qo'shildi!\n🔑 Kino kodi: <code>{code}</code>",
         parse_mode="HTML",
     )
   except Exception as e:
@@ -199,17 +167,6 @@ def handle_direct_video(message):
 
 @bot.message_handler(commands=["start"])
 def send_welcome(message):
-  user_id = message.from_user.id
-
-  if not check_subscription(user_id):
-    bot.send_message(
-        message.chat.id,
-        "⚠️ Botimizdan to'liq foydalanish uchun avval quyidagi sahifalarimizga"
-        " a'zo bo'ling:",
-        reply_markup=sub_keyboard(),
-    )
-    return
-
   first_name = (
       message.from_user.first_name
       if message.from_user.first_name
@@ -225,42 +182,20 @@ def send_welcome(message):
   markup.row("📂 Janrlar", "📢 Reklama")
 
   welcome_text = (
-      f"Assalomu alaykum, **{first_name}{username}**! 👋\n\n"
+      f"Assalomu alaykum, <b>{first_name}{username}</b>! 👋\n\n"
       f"🇺🇿 Toshkent vaqti: {current_time}\n"
       f"🌤 Toshkent ob-havosi: {weather}\n\n"
-      f"🎬 Kino qidirish uchun shunchaki kanalimizdan olingan raqamli kodni"
-      f" yuboring yoki quyidagi tugmadan foydalaning:"
+      f"🎬 Yangi kinolarni manashu kanaldan topasiz: {TELEGRAM_LINK}\n\n"
+      f"Kino qidirish uchun shunchaki kanalimizdan olingan raqamli kodni yuborishingiz mumkin."
   )
 
   bot.send_message(
-      message.chat.id, welcome_text, reply_markup=markup, parse_mode="Markdown"
+      message.chat.id, welcome_text, reply_markup=markup, parse_mode="HTML"
   )
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "check_sub")
-def callback_sub(call):
-  user_id = call.from_user.id
-  if check_subscription(user_id):
-    bot.answer_callback_query(call.id, "Rahmat! Obuna tasdiqlandi ✅")
-    bot.delete_message(call.message.chat.id, call.message.message_id)
-    send_welcome(call.message)
-  else:
-    bot.answer_callback_query(
-        call.id, "Siz hali kanalga a'zo bo'lmadingiz! ❌", show_alert=True
-    )
 
 
 @bot.message_handler(func=lambda message: message.text == "📂 Janrlar")
 def show_genres(message):
-  user_id = message.from_user.id
-  if not check_subscription(user_id):
-    bot.send_message(
-        message.chat.id,
-        "Iltimos, avval sahifalarimizga obuna bo'ling:",
-        reply_markup=sub_keyboard(),
-    )
-    return
-
   markup = types.InlineKeyboardMarkup(row_width=2)
   for key, name in GENRES.items():
     markup.add(types.InlineKeyboardButton(name, callback_data=f"genre_{key}"))
@@ -270,13 +205,6 @@ def show_genres(message):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("genre_"))
 def callback_genre(call):
-  user_id = call.from_user.id
-  if not check_subscription(user_id):
-    bot.answer_callback_query(
-        call.id, "Iltimos, avval kanalga obuna bo'ling!", show_alert=True
-    )
-    return
-
   genre_key = call.data.replace("genre_", "")
   movies = get_movies_by_genre(genre_key)
 
@@ -296,28 +224,18 @@ def callback_genre(call):
 @bot.message_handler(func=lambda message: message.text == "📢 Reklama")
 def ad_info(message):
   ad_text = (
-      f"📢 **Reklama berish uchun:**\n"
-      f"Agar botimizda o'z reklamangizni joylashtirmoqchi bo'lsangiz, quyidagi"
-      f" manzilga murojaat qiling:\n"
+      f"📢 <b>Reklama berish uchun:</b>\n"
+      f"Agar botimizda o'z reklamangizni joylashtirmoqchi bo'lsangiz, quyidagi manzilga murojaat qiling:\n"
       f"👉 Murojaat uchun: {ADMIN_USERNAME}\n\n"
-      f"🌐 **Bizning sahifalarimiz:**\n"
+      f"🌐 <b>Bizning sahifalarimiz:</b>\n"
       f"• Telegram: {TELEGRAM_LINK}\n"
       f"• Instagram: {INSTAGRAM_LINK}"
   )
-  bot.send_message(message.chat.id, ad_text, parse_mode="Markdown")
+  bot.send_message(message.chat.id, ad_text, parse_mode="HTML")
 
 
 @bot.message_handler(func=lambda message: True)
 def find_movie(message):
-  user_id = message.from_user.id
-  if not check_subscription(user_id):
-    bot.send_message(
-        message.chat.id,
-        "Iltimos, avval sahifalarimizga obuna bo'ling:",
-        reply_markup=sub_keyboard(),
-    )
-    return
-
   code = message.text.strip()
   movie = get_movie_by_code(code)
 
@@ -332,7 +250,6 @@ def find_movie(message):
 
 
 if __name__ == "__main__":
-  # Veb-serverni alohida oqimda (thread) ishga tushiramiz
   t = threading.Thread(target=run_web)
   t.start()
 
