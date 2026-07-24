@@ -8,10 +8,10 @@ from telebot import types
 # ==========================================
 # 1. SOZLAMALAR
 # ==========================================
-BOT_TOKEN = "8570550365:AAEB1BZm-Sb8xNIzhd8WObvyT0TcKgm0_OI"
+BOT_TOKEN = "8570550365:AAEgMz6KRm8vYZOqtBDZAMxbnJvRD-oIbXI"
 
 # O'zingizdagi OpenWeatherMap API kalitini shu yerga yozing:
-WEATHER_API_KEY = "AZ_API_KALITINGIZNI_SHU_YERGA_YOZING" 
+WEATHER_API_KEY = "f6d4de7aafaecad64a98ca68a9f944be" 
 
 MAIN_CHANNEL_ID = "@uzkinomarket"
 TELEGRAM_LINK = "https://t.me/uzkinomarket"
