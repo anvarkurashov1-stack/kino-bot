@@ -26,7 +26,7 @@ ADMIN_ID = 5114804565
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # ==========================================
-# 2. FLASK WEB SERVER (RENDER PORTI UCHUN)
+# 2. FLASK WEB SERVER (409-XATOSIZ)
 # ==========================================
 app = Flask(__name__)
 
@@ -38,7 +38,8 @@ def home():
 
 def run_web():
   port = int(os.environ.get("PORT", 10000))
-  app.run(host="0.0.0.0", port=port)
+  # use_reloader=False va debug=False 409-xatolikni oldini oladi
+  app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 
 # ==========================================
@@ -76,7 +77,6 @@ def init_db():
   conn = get_db_connection()
   cursor = conn.cursor()
 
-  # Kinolar va Seriallar asosiy jadvali
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS movies (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,7 +89,6 @@ def init_db():
         )
     """)
 
-  # Serial epizodlari jadvali
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS episodes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -369,7 +368,7 @@ def callback_genre(call):
 def ad_info(message):
   ad_text = (
       f"📢 <b>Reklama berish uchun:</b>\n"
-      "Murojaat uchun: {ADMIN_USERNAME}\n\n"
+      f"Murojaat uchun: {ADMIN_USERNAME}\n\n"
       f"• Telegram: {TELEGRAM_LINK}\n"
       f"• Instagram: {INSTAGRAM_LINK}"
   )
@@ -386,7 +385,6 @@ def find_movie_or_series(message):
   conn = get_db_connection()
   cursor = conn.cursor()
 
-  # 1. Serial qismlarini tekshirish
   cursor.execute(
       "SELECT DISTINCT season_num FROM episodes WHERE movie_code = ? ORDER BY"
       " season_num ASC",
@@ -418,7 +416,6 @@ def find_movie_or_series(message):
     conn.close()
     return
 
-  # 2. Oddiy kino bo'lsa
   cursor.execute(
       "SELECT title, caption, file_id FROM movies WHERE code = ? AND is_series"
       " = 0",
@@ -546,11 +543,21 @@ def back_to_seasons(call):
 
 
 # ==========================================
-# 9. ISHGA TUSHIRISH
+# 9. TO'G'RI VA XATOSIZ ISHGA TUSHIRISH
 # ==========================================
 if __name__ == "__main__":
+  # 1. Flask serverni alohida potokda ishga tushirish (daemon=True)
   t = threading.Thread(target=run_web)
+  t.daemon = True
   t.start()
 
+  # 2. Telegram'da eski xabarlar yoki webhook bo'lsa tozalab tashlaymiz
+  try:
+    bot.remove_webhook()
+  except Exception as e:
+    print("Webhook tozalandi:", e)
+
   print("Bot muvaffaqiyatli ishga tushdi...")
-  bot.infinity_polling()
+
+  # 3. skip_pending=True bilan pollingni yoqamiz (409 Conflict xatosini olib tashlaydi)
+  bot.infinity_polling(skip_pending=True)
