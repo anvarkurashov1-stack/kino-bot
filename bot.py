@@ -2,6 +2,7 @@ from datetime import datetime
 import os
 import sqlite3
 import threading
+import time
 from flask import Flask
 import pytz
 import requests
@@ -9,24 +10,36 @@ import telebot
 from telebot import types
 
 # ==========================================
-# 1. SOZLAMALAR VA KONFIGURATSIYA
+# 1. SOZLAMALAR VA KONFIGURATSIYA (XAVFSIZ)
 # ==========================================
+# Maxfiy kalitlarni muhit o'zgaruvchilaridan olish afzal
 BOT_TOKEN = os.environ.get(
     "BOT_TOKEN", "8570550365:AAGpZdxSfWQwf4Z5-KgMvD6zLG8awXH7rjU"
 )
-WEATHER_API_KEY = "f6d4de7aafaecad64a98ca68a9f944be"
+WEATHER_API_KEY = os.environ.get(
+    "WEATHER_API_KEY", "f6d4de7aafaecad64a98ca68a9f944be"
+)
 
 TELEGRAM_LINK = "https://t.me/uzkinomarket"
 INSTAGRAM_LINK = (
     "https://www.instagram.com/uzkinomarket?igsh=MzBtY2t0YzhzMm55"
 )
 ADMIN_USERNAME = "@Uzkinomarket_admin"
-ADMIN_ID = 5114804565
+
+# Admin ID integer ekanligini ta'minlaymiz
+try:
+  ADMIN_ID = int(os.environ.get("ADMIN_ID", 5114804565))
+except ValueError:
+  ADMIN_ID = 5114804565
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
+# Admin holatlarini va anti-spam taymerlarini saqlash
+ADMIN_STATES = {}
+USER_LAST_MESSAGE = {}  # Rate Limiting uchun
+
 # ==========================================
-# 2. FLASK WEB SERVER (409-XATOSIZ)
+# 2. FLASK WEB SERVER
 # ==========================================
 app = Flask(__name__)
 
@@ -38,7 +51,6 @@ def home():
 
 def run_web():
   port = int(os.environ.get("PORT", 10000))
-  # use_reloader=False va debug=False 409-xatolikni oldini oladi
   app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 
@@ -80,7 +92,7 @@ def init_db():
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS movies (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            code TEXT UNIQUE,
+            code TEXT,
             title TEXT,
             caption TEXT,
             file_id TEXT,
@@ -99,6 +111,22 @@ def init_db():
         )
     """)
 
+  cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            first_name TEXT,
+            username TEXT,
+            joined_at TEXT
+        )
+    """)
+
+  cursor.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+
   conn.commit()
   conn.close()
 
@@ -106,15 +134,114 @@ def init_db():
 init_db()
 
 # ==========================================
-# 4. YORDAMCHI FUNKSIYALAR
+# 4. YORDAMCHI FUNKSIYALAR & XAVFSIZLIK
 # ==========================================
+
+
+def is_spam(user_id, limit_seconds=0.7):
+  """Anti-Spam: Foydalanuvchi juda tez-tez so'rov yuborsa cheklaydi."""
+  now = time.time()
+  last_time = USER_LAST_MESSAGE.get(user_id, 0)
+  if now - last_time < limit_seconds:
+    return True
+  USER_LAST_MESSAGE[user_id] = now
+  return False
+
+
+def add_user(user_id, first_name, username):
+  try:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute(
+        """
+            INSERT OR IGNORE INTO users (user_id, first_name, username, joined_at)
+            VALUES (?, ?, ?, ?)
+        """,
+        (user_id, first_name, username, now),
+    )
+    conn.commit()
+  except Exception as e:
+    print(f"Baza xatosi (add_user): {e}")
+  finally:
+    conn.close()
+
+
+def get_channels():
+  conn = get_db_connection()
+  cursor = conn.cursor()
+  cursor.execute("SELECT value FROM settings WHERE key = 'channels'")
+  row = cursor.fetchone()
+  conn.close()
+  if row and row[0]:
+    return [ch.strip() for ch in row[0].split(",") if ch.strip()]
+  return []
+
+
+def add_channel_to_db(channel):
+  channels = get_channels()
+  if channel not in channels:
+    channels.append(channel)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('channels', ?)",
+        (",".join(channels),),
+    )
+    conn.commit()
+    conn.close()
+
+
+def remove_channel_from_db(channel):
+  channels = get_channels()
+  if channel in channels:
+    channels.remove(channel)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('channels', ?)",
+        (",".join(channels),),
+    )
+    conn.commit()
+    conn.close()
+
+
+def check_subscription(user_id):
+  channels = get_channels()
+  unsubscribed = []
+  for ch in channels:
+    try:
+      member = bot.get_chat_member(ch, user_id)
+      if member.status in ["left", "kicked"]:
+        unsubscribed.append(ch)
+    except Exception as e:
+      print(f"Kanalni tekshirishda xatolik ({ch}): {e}")
+  return unsubscribed
+
+
+def get_subscription_markup(unsubscribed_channels):
+  markup = types.InlineKeyboardMarkup(row_width=1)
+  for ch in unsubscribed_channels:
+    ch_clean = ch.replace("@", "")
+    url = f"https://t.me/{ch_clean}"
+    markup.add(
+        types.InlineKeyboardButton(
+            text=f"➕ Kanalka a'zo bo'lish ({ch})", url=url
+        )
+    )
+  markup.add(
+      types.InlineKeyboardButton(
+          text="✅ Tekshirish", callback_data="check_sub"
+      )
+  )
+  return markup
 
 
 def get_movies_by_genre(genre_key):
   conn = get_db_connection()
   cursor = conn.cursor()
   cursor.execute(
-      "SELECT code, title FROM movies WHERE genre = ?", (genre_key,)
+      "SELECT DISTINCT code, title FROM movies WHERE genre = ?", (genre_key,)
   )
   rows = cursor.fetchall()
   conn.close()
@@ -124,7 +251,7 @@ def get_movies_by_genre(genre_key):
 def get_tashkent_weather():
   try:
     url = f"https://api.openweathermap.org/data/2.5/weather?q=Tashkent&units=metric&appid={WEATHER_API_KEY}&lang=uz"
-    response = requests.get(url, timeout=5)
+    response = requests.get(url, timeout=4)
     if response.status_code == 200:
       data = response.json()
       temp = round(data["main"]["temp"])
@@ -138,7 +265,7 @@ def get_tashkent_weather():
 def process_and_save_media(file_id, caption, message):
   cap_lower = caption.lower()
 
-  # A) SERIAL BO'LSA
+  # A) SERIAL YOKI KINO QISMLARI BO'LSA
   if "kod:" in cap_lower and "qism:" in cap_lower:
     try:
       parts = caption.split("|")
@@ -156,23 +283,21 @@ def process_and_save_media(file_id, caption, message):
           ep_num = int(p.split(":")[1].strip())
 
       if not code:
-        bot.reply_to(message, "❌ Serial kodi aniqlanmadi!")
+        bot.reply_to(message, "❌ Kod aniqlanmadi!")
         return
 
       conn = get_db_connection()
       cursor = conn.cursor()
 
-      cursor.execute("SELECT id FROM movies WHERE code = ?", (code,))
-      movie = cursor.fetchone()
-
       lines = [line.strip() for line in caption.split("\n") if line.strip()]
-      title = "Serial"
+      title = "Kino / Serial"
       for line in lines:
-        if "serial:" in line.lower() or "kino:" in line.lower():
+        if "kino:" in line.lower() or "serial:" in line.lower():
           title = line.split(":", 1)[1].strip()
           break
-      if title == "Serial" and lines:
-        title = lines[0]
+
+      cursor.execute("SELECT id FROM movies WHERE code = ?", (code,))
+      movie = cursor.fetchone()
 
       if not movie:
         cursor.execute(
@@ -196,18 +321,18 @@ def process_and_save_media(file_id, caption, message):
 
       bot.reply_to(
           message,
-          f"✅ Serial qismi saqlandi!\n🔑 Kod: <code>{code}</code> | 🎬"
-          f" {season_num}-fasl | 🍿 {ep_num}-qism",
+          f"✅ Qism saqlandi!\n🔑 Kod: <code>{code}</code> | 🎬 {season_num}-fasl"
+          f" | 🍿 {ep_num}-qism",
           parse_mode="HTML",
       )
     except Exception as e:
       bot.reply_to(
           message,
-          f"❌ Serial saqlashda xatolik! Format: `Kod: 55 | Fasl: 1 | Qism:"
-          f" 1`\nXatolik: {e}",
+          f"❌ Qismni saqlashda xatolik! Format: `Kod: 5 | Qism: 1` yoki `Kod: 5"
+          f" | Fasl: 1 | Qism: 1`\nXatolik: {e}",
       )
 
-  # B) ODDIY KINO BO'LSA
+  # B) BIR QISMLI ODDIY KINO BO'LSA
   else:
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -238,7 +363,7 @@ def process_and_save_media(file_id, caption, message):
 
       cursor.execute(
           """
-                INSERT OR REPLACE INTO movies (code, title, caption, file_id, genre, is_series)
+                INSERT INTO movies (code, title, caption, file_id, genre, is_series)
                 VALUES (?, ?, ?, ?, ?, 0)
             """,
           (code, title, caption, file_id, detected_genre),
@@ -257,14 +382,146 @@ def process_and_save_media(file_id, caption, message):
 
 
 # ==========================================
-# 5. ADMIN HANDLERLARI (VIDEO VA URL)
+# 5. ADMIN HANDLERLARI (STRICT AUTHORIZATION)
 # ==========================================
-@bot.message_handler(content_types=["video"])
-def handle_direct_video(message):
-  if message.from_user.id != ADMIN_ID:
-    bot.reply_to(message, "Kechirasiz, bu funksiya faqat admin uchun.")
+@bot.message_handler(
+    commands=["admin"], func=lambda m: m.from_user.id == ADMIN_ID
+)
+def admin_panel(message):
+  markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+  markup.add(
+      "📊 Statistika",
+      "📢 Xabar tarqatish",
+      "➕ Kanal qo'shish",
+      "➖ Kanal o'chirish",
+      "📋 Kanallar ro'yxati",
+      "❌ Chiqish",
+  )
+
+  bot.send_message(
+      message.chat.id,
+      "🛠 <b>Admin paneliga xush kelibsiz!</b>",
+      reply_markup=markup,
+      parse_mode="HTML",
+  )
+
+
+@bot.message_handler(
+    func=lambda message: message.from_user.id == ADMIN_ID
+    and message.text == "❌ Chiqish"
+)
+def exit_admin(message):
+  ADMIN_STATES.pop(ADMIN_ID, None)
+  markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+  markup.row("📂 Janrlar", "📢 Reklama")
+  bot.send_message(
+      message.chat.id,
+      "Admin panelidan chiqdingiz.",
+      reply_markup=markup,
+  )
+
+
+@bot.message_handler(
+    func=lambda message: message.from_user.id == ADMIN_ID
+    and message.text == "📊 Statistika"
+)
+def admin_stats(message):
+  conn = get_db_connection()
+  cursor = conn.cursor()
+
+  cursor.execute("SELECT COUNT(*) FROM users")
+  users_count = cursor.fetchone()[0]
+
+  cursor.execute("SELECT COUNT(*) FROM movies WHERE is_series = 0")
+  movies_count = cursor.fetchone()[0]
+
+  cursor.execute("SELECT COUNT(*) FROM movies WHERE is_series = 1")
+  series_count = cursor.fetchone()[0]
+
+  cursor.execute("SELECT COUNT(*) FROM episodes")
+  episodes_count = cursor.fetchone()[0]
+
+  conn.close()
+
+  stats_text = (
+      f"📊 <b>Bot Statistikasi:</b>\n\n"
+      f"👤 Foydalanuvchilar: <b>{users_count}</b> ta\n"
+      f"🎬 Kinolar: <b>{movies_count}</b> ta\n"
+      f"📺 Seriallar: <b>{series_count}</b> ta\n"
+      f"🍿 Serial qismlari: <b>{episodes_count}</b> ta"
+  )
+  bot.send_message(message.chat.id, stats_text, parse_mode="HTML")
+
+
+@bot.message_handler(
+    func=lambda message: message.from_user.id == ADMIN_ID
+    and message.text == "📋 Kanallar ro'yxati"
+)
+def admin_list_channels(message):
+  channels = get_channels()
+  if not channels:
+    bot.send_message(
+        message.chat.id, "⚠️ Hozircha majburiy obuna kanallari yo'q."
+    )
     return
 
+  text = "📋 <b>Majburiy obuna kanallari:</b>\n\n"
+  for ch in channels:
+    text += f"• {ch}\n"
+  bot.send_message(message.chat.id, text, parse_mode="HTML")
+
+
+@bot.message_handler(
+    func=lambda message: message.from_user.id == ADMIN_ID
+    and message.text == "➕ Kanal qo'shish"
+)
+def admin_add_channel_start(message):
+  ADMIN_STATES[ADMIN_ID] = "waiting_for_add_channel"
+  bot.send_message(
+      message.chat.id,
+      "➕ Qo'shmoqchi bo'lgan kanalingiz username'ini yuboring:\n<i>(Masalan:"
+      " @uzkinomarket)</i>\n\n<b>Muhim:</b> Bot ushbu kanalda administrator"
+      " bo'lishi kerak!",
+      parse_mode="HTML",
+  )
+
+
+@bot.message_handler(
+    func=lambda message: message.from_user.id == ADMIN_ID
+    and message.text == "➖ Kanal o'chirish"
+)
+def admin_remove_channel_start(message):
+  channels = get_channels()
+  if not channels:
+    bot.send_message(
+        message.chat.id, "⚠️ O'chirish uchun kanallar mavjud emas."
+    )
+    return
+
+  ADMIN_STATES[ADMIN_ID] = "waiting_for_remove_channel"
+  text = "➖ O'chirmoqchi bo'lgan kanalingiz username'ini kiriting:\n\n"
+  for ch in channels:
+    text += f"• <code>{ch}</code>\n"
+  bot.send_message(message.chat.id, text, parse_mode="HTML")
+
+
+@bot.message_handler(
+    func=lambda message: message.from_user.id == ADMIN_ID
+    and message.text == "📢 Xabar tarqatish"
+)
+def admin_broadcast_start(message):
+  ADMIN_STATES[ADMIN_ID] = "waiting_for_broadcast"
+  bot.send_message(
+      message.chat.id,
+      "📢 Foydalanuvchilarga yubormoqchi bo'lgan xabaringizni kiriting (rasm,"
+      " video, matn va h.k.):",
+  )
+
+
+@bot.message_handler(
+    content_types=["video"], func=lambda m: m.from_user.id == ADMIN_ID
+)
+def handle_direct_video(message):
   caption = message.caption if message.caption else "Kino"
   file_id = message.video.file_id
   process_and_save_media(file_id, caption, message)
@@ -298,22 +555,41 @@ def handle_video_url(message):
     process_and_save_media(file_id, caption if caption else "Kino", message)
 
   except Exception as e:
-    bot.reply_to(
-        message, f"❌ URL orqali yuklashda xatolik!\nXatolik: {e}"
-    )
+    bot.reply_to(message, f"❌ URL orqali yuklashda xatolik!\nXatolik: {e}")
 
 
 # ==========================================
-# 6. FOYDALANUVCHILAR UCHUN
+# 6. FOYDALANUVCHILAR VA BUYRUQLAR
 # ==========================================
 @bot.message_handler(commands=["start"])
 def send_welcome(message):
+  if is_spam(message.from_user.id):
+    return
+
+  add_user(
+      message.from_user.id,
+      message.from_user.first_name,
+      message.from_user.username,
+  )
+
+  unsubscribed = check_subscription(message.from_user.id)
+  if unsubscribed:
+    bot.send_message(
+        message.chat.id,
+        "⚠️ <b>Botdan foydalanish uchun quyidagi kanallarga a'zo bo'ling:</b>",
+        reply_markup=get_subscription_markup(unsubscribed),
+        parse_mode="HTML",
+    )
+    return
+
   first_name = (
       message.from_user.first_name
       if message.from_user.first_name
       else "Foydalanuvchi"
   )
-  username = f" (@{message.from_user.username})" if message.from_user.username else ""
+  username = (
+      f" (@{message.from_user.username})" if message.from_user.username else ""
+  )
 
   tz = pytz.timezone("Asia/Tashkent")
   current_time = datetime.now(tz).strftime("%d.%m.%Y | %H:%M")
@@ -335,8 +611,42 @@ def send_welcome(message):
   )
 
 
+@bot.callback_query_handler(func=lambda call: call.data == "check_sub")
+def callback_check_sub(call):
+  unsubscribed = check_subscription(call.from_user.id)
+  if unsubscribed:
+    bot.answer_callback_query(
+        call.id,
+        "❌ Siz hali barcha kanallarga a'zo bo'lmadingiz!",
+        show_alert=True,
+    )
+  else:
+    try:
+      bot.delete_message(call.message.chat.id, call.message.message_id)
+    except Exception:
+      pass
+    bot.send_message(
+        call.message.chat.id,
+        "✅ Rahmat! Kanallarga muvaffaqiyatli a'zo bo'ldingiz.\nKino kodini"
+        " yuborishingiz mumkin.",
+    )
+
+
 @bot.message_handler(func=lambda message: message.text == "📂 Janrlar")
 def show_genres(message):
+  if is_spam(message.from_user.id):
+    return
+
+  unsubscribed = check_subscription(message.from_user.id)
+  if unsubscribed:
+    bot.send_message(
+        message.chat.id,
+        "⚠️ <b>Botdan foydalanish uchun quyidagi kanallarga a'zo bo'ling:</b>",
+        reply_markup=get_subscription_markup(unsubscribed),
+        parse_mode="HTML",
+    )
+    return
+
   markup = types.InlineKeyboardMarkup(row_width=2)
   for key, name in GENRES.items():
     markup.add(types.InlineKeyboardButton(name, callback_data=f"genre_{key}"))
@@ -366,6 +676,9 @@ def callback_genre(call):
 
 @bot.message_handler(func=lambda message: message.text == "📢 Reklama")
 def ad_info(message):
+  if is_spam(message.from_user.id):
+    return
+
   ad_text = (
       f"📢 <b>Reklama berish uchun:</b>\n"
       f"Murojaat uchun: {ADMIN_USERNAME}\n\n"
@@ -376,62 +689,179 @@ def ad_info(message):
 
 
 # ==========================================
-# 7. QIDIRUV MANTIQI
+# 7. QIDIRUV MANTIQI VA ADMIN HOLATLARINI QABUL QILISH
 # ==========================================
-@bot.message_handler(func=lambda message: True)
-def find_movie_or_series(message):
-  code = message.text.strip()
+@bot.message_handler(
+    content_types=["text", "photo", "video", "document", "audio", "voice"]
+)
+def handle_all_messages(message):
+  user_id = message.from_user.id
 
-  conn = get_db_connection()
-  cursor = conn.cursor()
-
-  cursor.execute(
-      "SELECT DISTINCT season_num FROM episodes WHERE movie_code = ? ORDER BY"
-      " season_num ASC",
-      (code,),
-  )
-  seasons = cursor.fetchall()
-
-  if seasons:
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    buttons = [
-        types.InlineKeyboardButton(
-            f"🎬 {s_num}-Fasl", callback_data=f"season_{code}_{s_num}"
-        )
-        for (s_num,) in seasons
-    ]
-    markup.add(*buttons)
-
-    cursor.execute("SELECT title FROM movies WHERE code = ?", (code,))
-    m_row = cursor.fetchone()
-    s_title = m_row[0] if m_row else f"Serial #{code}"
-
-    bot.send_message(
-        message.chat.id,
-        f"🎬 <b>{s_title} (Kodi: {code})</b>\n\nIltimos, kerakli faslni tanlang"
-        " 👇",
-        reply_markup=markup,
-        parse_mode="HTML",
-    )
-    conn.close()
+  # Spam tekshiruvi
+  if is_spam(user_id):
     return
 
-  cursor.execute(
-      "SELECT title, caption, file_id FROM movies WHERE code = ? AND is_series"
-      " = 0",
-      (code,),
-  )
-  movie = cursor.fetchone()
-  conn.close()
+  add_user(user_id, message.from_user.first_name, message.from_user.username)
 
-  if movie:
-    title, caption, file_id = movie
-    bot.send_video(message.chat.id, file_id, caption=caption, parse_mode="HTML")
-  else:
+  # Admin buyruqlarini qabul qilish
+  if user_id == ADMIN_ID and user_id in ADMIN_STATES:
+    state = ADMIN_STATES[user_id]
+
+    if state == "waiting_for_add_channel":
+      ch = message.text.strip()
+      if not ch.startswith("@"):
+        ch = "@" + ch
+      add_channel_to_db(ch)
+      ADMIN_STATES.pop(user_id, None)
+      bot.send_message(
+          message.chat.id, f"✅ Kanal muvaffaqiyatli qo'shildi: {ch}"
+      )
+      return
+
+    elif state == "waiting_for_remove_channel":
+      ch = message.text.strip()
+      if not ch.startswith("@"):
+        ch = "@" + ch
+      remove_channel_from_db(ch)
+      ADMIN_STATES.pop(user_id, None)
+      bot.send_message(message.chat.id, f"✅ Kanal o'chirildi: {ch}")
+      return
+
+    elif state == "waiting_for_broadcast":
+      ADMIN_STATES.pop(user_id, None)
+      conn = get_db_connection()
+      cursor = conn.cursor()
+      cursor.execute("SELECT user_id FROM users")
+      users = cursor.fetchall()
+      conn.close()
+
+      bot.send_message(
+          message.chat.id,
+          f"🚀 Xabar tarqatish boshlandi... Jami foydalanuvchilar: {len(users)}",
+      )
+
+      success = 0
+      failed = 0
+
+      # XAFSIZ BROADCAST: FloodWait cheklovining oldini olish uchun taymer kiritildi
+      for i, (u_id,) in enumerate(users):
+        try:
+          bot.copy_message(u_id, message.chat.id, message.message_id)
+          success += 1
+        except Exception:
+          failed += 1
+
+        # Har 25 ta xabardan so'ng 1 soniya kutamiz
+        if i % 25 == 0:
+          time.sleep(1)
+
+      bot.send_message(
+          message.chat.id,
+          f"✅ Xabar tarqatib bo'lindi!\n\n"
+          f"🟢 Muvaffaqiyatli: {success} ta\n"
+          f"🔴 Yetib bormadi (bloklangan): {failed} ta",
+      )
+      return
+
+  # Oddiy foydalanuvchilar uchun obunani tekshirish
+  unsubscribed = check_subscription(user_id)
+  if unsubscribed:
     bot.send_message(
         message.chat.id,
-        "❌ Bunday kodli kino yoki serial topilmadi. Kodingizni qayta tekshiring.",
+        "⚠️ <b>Botdan foydalanish uchun quyidagi kanallarga a'zo bo'ling:</b>",
+        reply_markup=get_subscription_markup(unsubscribed),
+        parse_mode="HTML",
     )
+    return
+
+  # Kino qidirish mantiqi
+  if message.text:
+    code = message.text.strip()
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # 1. Epizodlar bor-yo'qligini tekshiramiz
+    cursor.execute(
+        "SELECT DISTINCT season_num FROM episodes WHERE movie_code = ? ORDER BY"
+        " season_num ASC",
+        (code,),
+    )
+    seasons = cursor.fetchall()
+
+    if seasons:
+      cursor.execute("SELECT title FROM movies WHERE code = ?", (code,))
+      m_row = cursor.fetchone()
+      s_title = m_row[0] if m_row else f"Kino / Serial #{code}"
+
+      # Agar faqat 1 ta fasl bo'lsa
+      if len(seasons) == 1:
+        s_num = seasons[0][0]
+        cursor.execute(
+            "SELECT episode_num FROM episodes WHERE movie_code = ? AND"
+            " season_num = ? ORDER BY episode_num ASC",
+            (code, s_num),
+        )
+        episodes = cursor.fetchall()
+
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        buttons = [
+            types.InlineKeyboardButton(
+                f"🎬 {ep_num}-Qism",
+                callback_data=f"play_{code}_{s_num}_{ep_num}",
+            )
+            for (ep_num,) in episodes
+        ]
+        markup.add(*buttons)
+
+        bot.send_message(
+            message.chat.id,
+            f"🎬 <b>{s_title} (Kodi: {code})</b>\n\nKerakli qismni tanlang 👇",
+            reply_markup=markup,
+            parse_mode="HTML",
+        )
+      else:
+        # Ko'p faslli serial bo'lsa
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        buttons = [
+            types.InlineKeyboardButton(
+                f"🎬 {s_num}-Fasl", callback_data=f"season_{code}_{s_num}"
+            )
+            for (s_num,) in seasons
+        ]
+        markup.add(*buttons)
+
+        bot.send_message(
+            message.chat.id,
+            f"🎬 <b>{s_title} (Kodi: {code})</b>\n\nIltimos, kerakli faslni tanlang"
+            " 👇",
+            reply_markup=markup,
+            parse_mode="HTML",
+        )
+
+      conn.close()
+      return
+
+    # 2. Oddiy bir qismli kino bo'lsa
+    cursor.execute(
+        "SELECT title, caption, file_id FROM movies WHERE code = ? AND"
+        " is_series = 0",
+        (code,),
+    )
+    movie = cursor.fetchone()
+    conn.close()
+
+    if movie:
+      title, caption, file_id = movie
+      bot.send_video(
+          message.chat.id, file_id, caption=caption, parse_mode="HTML"
+      )
+    else:
+      bot.send_message(
+          message.chat.id,
+          "❌ Bunday kodli kino yoki serial topilmadi. Kodingizni qayta"
+          " tekshiring.",
+      )
 
 
 # ==========================================
@@ -494,7 +924,7 @@ def send_episode(call):
     bot.send_video(
         call.message.chat.id,
         file_id,
-        caption=f"🎬 Kod: {code} | 🍿 {season_num}-Fasl, {ep_num}-qism",
+        caption=f"🎬 Kod: {code} | 🍿 {ep_num}-Qism",
     )
     bot.answer_callback_query(call.id)
   else:
@@ -518,7 +948,7 @@ def back_to_seasons(call):
 
   cursor.execute("SELECT title FROM movies WHERE code = ?", (code,))
   m_row = cursor.fetchone()
-  s_title = m_row[0] if m_row else f"Serial #{code}"
+  s_title = m_row[0] if m_row else f"Kino / Serial #{code}"
   conn.close()
 
   markup = types.InlineKeyboardMarkup(row_width=2)
@@ -543,21 +973,17 @@ def back_to_seasons(call):
 
 
 # ==========================================
-# 9. TO'G'RI VA XATOSIZ ISHGA TUSHIRISH
+# 9. ISHGA TUSHIRISH
 # ==========================================
 if __name__ == "__main__":
-  # 1. Flask serverni alohida potokda ishga tushirish (daemon=True)
   t = threading.Thread(target=run_web)
   t.daemon = True
   t.start()
 
-  # 2. Telegram'da eski xabarlar yoki webhook bo'lsa tozalab tashlaymiz
   try:
     bot.remove_webhook()
   except Exception as e:
     print("Webhook tozalandi:", e)
 
-  print("Bot muvaffaqiyatli ishga tushdi...")
-
-  # 3. skip_pending=True bilan pollingni yoqamiz (409 Conflict xatosini olib tashlaydi)
+  print("Bot xavfsiz rejimda ishga tushdi...")
   bot.infinity_polling(skip_pending=True)
