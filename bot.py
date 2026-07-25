@@ -12,7 +12,6 @@ from telebot import types
 # ==========================================
 # 1. SOZLAMALAR VA KONFIGURATSIYA (XAVFSIZ)
 # ==========================================
-# Maxfiy kalitlarni muhit o'zgaruvchilaridan olish afzal
 BOT_TOKEN = os.environ.get(
     "BOT_TOKEN", "8570550365:AAGpZdxSfWQwf4Z5-KgMvD6zLG8awXH7rjU"
 )
@@ -20,26 +19,29 @@ WEATHER_API_KEY = os.environ.get(
     "WEATHER_API_KEY", "f6d4de7aafaecad64a98ca68a9f944be"
 )
 
+try:
+  ADMIN_ID = int(os.environ.get("ADMIN_ID", "5114804565"))
+except ValueError:
+  ADMIN_ID = 5114804565
+
+if not BOT_TOKEN:
+  raise ValueError(
+      "BOT_TOKEN topilmadi! Iltimos, muhit o'zgaruvchilariga BOT_TOKEN joylang."
+  )
+
 TELEGRAM_LINK = "https://t.me/uzkinomarket"
 INSTAGRAM_LINK = (
     "https://www.instagram.com/uzkinomarket?igsh=MzBtY2t0YzhzMm55"
 )
 ADMIN_USERNAME = "@Uzkinomarket_admin"
 
-# Admin ID integer ekanligini ta'minlaymiz
-try:
-  ADMIN_ID = int(os.environ.get("ADMIN_ID", 5114804565))
-except ValueError:
-  ADMIN_ID = 5114804565
-
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Admin holatlarini va anti-spam taymerlarini saqlash
 ADMIN_STATES = {}
-USER_LAST_MESSAGE = {}  # Rate Limiting uchun
+USER_LAST_MESSAGE = {}
 
 # ==========================================
-# 2. FLASK WEB SERVER
+# 2. FLASK WEB SERVER (Render/Koyeb uchun)
 # ==========================================
 app = Flask(__name__)
 
@@ -139,7 +141,6 @@ init_db()
 
 
 def is_spam(user_id, limit_seconds=0.7):
-  """Anti-Spam: Foydalanuvchi juda tez-tez so'rov yuborsa cheklaydi."""
   now = time.time()
   last_time = USER_LAST_MESSAGE.get(user_id, 0)
   if now - last_time < limit_seconds:
@@ -226,7 +227,7 @@ def get_subscription_markup(unsubscribed_channels):
     url = f"https://t.me/{ch_clean}"
     markup.add(
         types.InlineKeyboardButton(
-            text=f"➕ Kanalka a'zo bo'lish ({ch})", url=url
+            text=f"➕ Kanalga a'zo bo'lish ({ch})", url=url
         )
     )
   markup.add(
@@ -249,6 +250,9 @@ def get_movies_by_genre(genre_key):
 
 
 def get_tashkent_weather():
+  if not WEATHER_API_KEY:
+    return "Ob-havo sozlanmagan"
+
   try:
     url = f"https://api.openweathermap.org/data/2.5/weather?q=Tashkent&units=metric&appid={WEATHER_API_KEY}&lang=uz"
     response = requests.get(url, timeout=4)
@@ -265,7 +269,6 @@ def get_tashkent_weather():
 def process_and_save_media(file_id, caption, message):
   cap_lower = caption.lower()
 
-  # A) SERIAL YOKI KINO QISMLARI BO'LSA
   if "kod:" in cap_lower and "qism:" in cap_lower:
     try:
       parts = caption.split("|")
@@ -326,13 +329,8 @@ def process_and_save_media(file_id, caption, message):
           parse_mode="HTML",
       )
     except Exception as e:
-      bot.reply_to(
-          message,
-          f"❌ Qismni saqlashda xatolik! Format: `Kod: 5 | Qism: 1` yoki `Kod: 5"
-          f" | Fasl: 1 | Qism: 1`\nXatolik: {e}",
-      )
+      bot.reply_to(message, f"❌ Qismni saqlashda xatolik: {e}")
 
-  # B) BIR QISMLI ODDIY KINO BO'LSA
   else:
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -382,7 +380,7 @@ def process_and_save_media(file_id, caption, message):
 
 
 # ==========================================
-# 5. ADMIN HANDLERLARI (STRICT AUTHORIZATION)
+# 5. ADMIN HANDLERLARI
 # ==========================================
 @bot.message_handler(
     commands=["admin"], func=lambda m: m.from_user.id == ADMIN_ID
@@ -415,9 +413,7 @@ def exit_admin(message):
   markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
   markup.row("📂 Janrlar", "📢 Reklama")
   bot.send_message(
-      message.chat.id,
-      "Admin panelidan chiqdingiz.",
-      reply_markup=markup,
+      message.chat.id, "Admin panelidan chiqdingiz.", reply_markup=markup
   )
 
 
@@ -480,8 +476,7 @@ def admin_add_channel_start(message):
   bot.send_message(
       message.chat.id,
       "➕ Qo'shmoqchi bo'lgan kanalingiz username'ini yuboring:\n<i>(Masalan:"
-      " @uzkinomarket)</i>\n\n<b>Muhim:</b> Bot ushbu kanalda administrator"
-      " bo'lishi kerak!",
+      " @uzkinomarket)</i>",
       parse_mode="HTML",
   )
 
@@ -513,8 +508,7 @@ def admin_broadcast_start(message):
   ADMIN_STATES[ADMIN_ID] = "waiting_for_broadcast"
   bot.send_message(
       message.chat.id,
-      "📢 Foydalanuvchilarga yubormoqchi bo'lgan xabaringizni kiriting (rasm,"
-      " video, matn va h.k.):",
+      "📢 Foydalanuvchilarga yubormoqchi bo'lgan xabaringizni kiriting:",
   )
 
 
@@ -538,8 +532,7 @@ def handle_direct_video(message):
 def handle_video_url(message):
   try:
     wait_msg = bot.reply_to(
-        message,
-        "⏳ Video URL orqali Telegram serveriga yuklanmoqda, kuting...",
+        message, "⏳ Video URL orqali Telegram serveriga yuklanmoqda..."
     )
 
     lines = message.text.split("\n")
@@ -555,7 +548,7 @@ def handle_video_url(message):
     process_and_save_media(file_id, caption if caption else "Kino", message)
 
   except Exception as e:
-    bot.reply_to(message, f"❌ URL orqali yuklashda xatolik!\nXatolik: {e}")
+    bot.reply_to(message, f"❌ URL orqali yuklashda xatolik: {e}")
 
 
 # ==========================================
@@ -602,7 +595,7 @@ def send_welcome(message):
       f"Assalomu alaykum, <b>{first_name}{username}</b>! 👋\n\n"
       f"🇺🇿 Toshkent vaqti: {current_time}\n"
       f"🌤 Toshkent ob-havosi: {weather}\n\n"
-      f"🎬 Yangi kinolarni manashu kanaldan topasiz: {TELEGRAM_LINK}\n\n"
+      f"🎬 Yangi kinolar kanali: {TELEGRAM_LINK}\n\n"
       "Kino yoki serial qidirish uchun shunchaki uning raqamli kodini yuboring."
   )
 
@@ -689,7 +682,7 @@ def ad_info(message):
 
 
 # ==========================================
-# 7. QIDIRUV MANTIQI VA ADMIN HOLATLARINI QABUL QILISH
+# 7. QIDIRUV VA ADMIN MANTIQI
 # ==========================================
 @bot.message_handler(
     content_types=["text", "photo", "video", "document", "audio", "voice"]
@@ -697,13 +690,11 @@ def ad_info(message):
 def handle_all_messages(message):
   user_id = message.from_user.id
 
-  # Spam tekshiruvi
   if is_spam(user_id):
     return
 
   add_user(user_id, message.from_user.first_name, message.from_user.username)
 
-  # Admin buyruqlarini qabul qilish
   if user_id == ADMIN_ID and user_id in ADMIN_STATES:
     state = ADMIN_STATES[user_id]
 
@@ -743,7 +734,6 @@ def handle_all_messages(message):
       success = 0
       failed = 0
 
-      # XAFSIZ BROADCAST: FloodWait cheklovining oldini olish uchun taymer kiritildi
       for i, (u_id,) in enumerate(users):
         try:
           bot.copy_message(u_id, message.chat.id, message.message_id)
@@ -751,7 +741,6 @@ def handle_all_messages(message):
         except Exception:
           failed += 1
 
-        # Har 25 ta xabardan so'ng 1 soniya kutamiz
         if i % 25 == 0:
           time.sleep(1)
 
@@ -759,11 +748,10 @@ def handle_all_messages(message):
           message.chat.id,
           f"✅ Xabar tarqatib bo'lindi!\n\n"
           f"🟢 Muvaffaqiyatli: {success} ta\n"
-          f"🔴 Yetib bormadi (bloklangan): {failed} ta",
+          f"🔴 Yetib bormadi: {failed} ta",
       )
       return
 
-  # Oddiy foydalanuvchilar uchun obunani tekshirish
   unsubscribed = check_subscription(user_id)
   if unsubscribed:
     bot.send_message(
@@ -774,14 +762,12 @@ def handle_all_messages(message):
     )
     return
 
-  # Kino qidirish mantiqi
   if message.text:
     code = message.text.strip()
 
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # 1. Epizodlar bor-yo'qligini tekshiramiz
     cursor.execute(
         "SELECT DISTINCT season_num FROM episodes WHERE movie_code = ? ORDER BY"
         " season_num ASC",
@@ -794,7 +780,6 @@ def handle_all_messages(message):
       m_row = cursor.fetchone()
       s_title = m_row[0] if m_row else f"Kino / Serial #{code}"
 
-      # Agar faqat 1 ta fasl bo'lsa
       if len(seasons) == 1:
         s_num = seasons[0][0]
         cursor.execute(
@@ -821,7 +806,6 @@ def handle_all_messages(message):
             parse_mode="HTML",
         )
       else:
-        # Ko'p faslli serial bo'lsa
         markup = types.InlineKeyboardMarkup(row_width=2)
         buttons = [
             types.InlineKeyboardButton(
@@ -842,7 +826,6 @@ def handle_all_messages(message):
       conn.close()
       return
 
-    # 2. Oddiy bir qismli kino bo'lsa
     cursor.execute(
         "SELECT title, caption, file_id FROM movies WHERE code = ? AND"
         " is_series = 0",
@@ -973,17 +956,35 @@ def back_to_seasons(call):
 
 
 # ==========================================
-# 9. ISHGA TUSHIRISH
+# 9. ISHGA TUSHIRISH (XAVFSIZ VA BARQAROR REJIM)
 # ==========================================
 if __name__ == "__main__":
+  # 1. Flask web serverini fonda ishga tushirish (Render/Heroku/Koyeb uchun)
   t = threading.Thread(target=run_web)
   t.daemon = True
   t.start()
 
+  # 2. Telegram Webhook'ni xavfsiz o'chirish va pauza berish
   try:
     bot.remove_webhook()
+    print(" Eski webhook muvaffaqiyatli o'chirildi.")
+    time.sleep(1.5)  # Telegram serveriga o'zgarishlar yetib borishi uchun
   except Exception as e:
-    print("Webhook tozalandi:", e)
+    print("⚠️ Webhook tozalashda ogohlantirish:", e)
 
-  print("Bot xavfsiz rejimda ishga tushdi...")
-  bot.infinity_polling(skip_pending=True)
+  print("🚀 Bot muvaffaqiyatli ishga tushdi va xabarlarni kutmoqda...")
+
+  # 3. Barqaror infinity polling sikli
+  while True:
+    try:
+      bot.infinity_polling(
+          skip_pending=True,  # Bot o'chiq bo'lganda kelgan eski xabarlarni o'tkazib yuboradi
+          timeout=20,  # Tarmoq kutish vaqti
+          long_polling_timeout=10,
+      )
+    except Exception as e:
+      print(
+          f"⚠️ Polling xatoligi yuz berdi: {e}. 5 soniyadan so'ng qayta"
+          " ulanadi..."
+      )
+      time.sleep(5)
