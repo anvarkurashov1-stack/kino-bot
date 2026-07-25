@@ -10,7 +10,7 @@ import telebot
 from telebot import types
 
 # ==========================================
-# 1. SOZLAMALAR VA KONFIGURATSIYA (XAVFSIZ)
+# 1. SOZLAMALAR VA KONFIGURATSIYA
 # ==========================================
 BOT_TOKEN = os.environ.get(
     "BOT_TOKEN", "8570550365:AAGpZdxSfWQwf4Z5-KgMvD6zLG8awXH7rjU"
@@ -41,7 +41,7 @@ ADMIN_STATES = {}
 USER_LAST_MESSAGE = {}
 
 # ==========================================
-# 2. FLASK WEB SERVER (Render/Koyeb uchun)
+# 2. FLASK WEB SERVER
 # ==========================================
 app = Flask(__name__)
 
@@ -99,7 +99,8 @@ def init_db():
             caption TEXT,
             file_id TEXT,
             genre TEXT,
-            is_series INTEGER DEFAULT 0
+            is_series INTEGER DEFAULT 0,
+            views INTEGER DEFAULT 0
         )
     """)
 
@@ -109,7 +110,9 @@ def init_db():
             movie_code TEXT,
             season_num INTEGER DEFAULT 1,
             episode_num INTEGER,
-            file_id TEXT
+            file_id TEXT,
+            caption TEXT,
+            views INTEGER DEFAULT 0
         )
     """)
 
@@ -129,6 +132,26 @@ def init_db():
         )
     """)
 
+  # Eskidan bor bazalar uchun yangi ustunlarni avtomatik qo'shish (Auto-migration)
+  try:
+    cursor.execute(
+        "ALTER TABLE movies ADD COLUMN views INTEGER DEFAULT 0"
+    )
+  except sqlite3.OperationalError:
+    pass
+
+  try:
+    cursor.execute(
+        "ALTER TABLE episodes ADD COLUMN views INTEGER DEFAULT 0"
+    )
+  except sqlite3.OperationalError:
+    pass
+
+  try:
+    cursor.execute("ALTER TABLE episodes ADD COLUMN caption TEXT")
+  except sqlite3.OperationalError:
+    pass
+
   conn.commit()
   conn.close()
 
@@ -136,8 +159,36 @@ def init_db():
 init_db()
 
 # ==========================================
-# 4. YORDAMCHI FUNKSIYALAR & XAVFSIZLIK
+# 4. YORDAMCHI FUNKSIYALAR
 # ==========================================
+
+
+def increment_movie_views(code):
+  conn = get_db_connection()
+  cursor = conn.cursor()
+  cursor.execute(
+      "UPDATE movies SET views = views + 1 WHERE code = ?", (code,)
+  )
+  conn.commit()
+  conn.close()
+
+
+def increment_episode_views(code, season_num, ep_num):
+  conn = get_db_connection()
+  cursor = conn.cursor()
+  cursor.execute(
+      """
+        UPDATE episodes 
+        SET views = views + 1 
+        WHERE movie_code = ? AND season_num = ? AND episode_num = ?
+    """,
+      (code, season_num, ep_num),
+  )
+  cursor.execute(
+      "UPDATE movies SET views = views + 1 WHERE code = ?", (code,)
+  )
+  conn.commit()
+  conn.close()
 
 
 def is_spam(user_id, limit_seconds=0.7):
@@ -305,18 +356,19 @@ def process_and_save_media(file_id, caption, message):
       if not movie:
         cursor.execute(
             """
-                    INSERT INTO movies (code, title, caption, genre, is_series)
-                    VALUES (?, ?, ?, ?, 1)
+                    INSERT INTO movies (code, title, caption, genre, is_series, views)
+                    VALUES (?, ?, ?, ?, 1, 0)
                 """,
             (code, title, caption, "#serial"),
         )
 
+      # Epizod va uning to'liq caption (matni) bazaga saqlanadi
       cursor.execute(
           """
-                INSERT INTO episodes (movie_code, season_num, episode_num, file_id)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO episodes (movie_code, season_num, episode_num, file_id, caption, views)
+                VALUES (?, ?, ?, ?, ?, 0)
             """,
-          (code, season_num, ep_num, file_id),
+          (code, season_num, ep_num, file_id, caption),
       )
 
       conn.commit()
@@ -361,8 +413,8 @@ def process_and_save_media(file_id, caption, message):
 
       cursor.execute(
           """
-                INSERT INTO movies (code, title, caption, file_id, genre, is_series)
-                VALUES (?, ?, ?, ?, ?, 0)
+                INSERT INTO movies (code, title, caption, file_id, genre, is_series, views)
+                VALUES (?, ?, ?, ?, ?, 0, 0)
             """,
           (code, title, caption, file_id, detected_genre),
       )
@@ -380,7 +432,7 @@ def process_and_save_media(file_id, caption, message):
 
 
 # ==========================================
-# 5. ADMIN HANDLERLARI
+# 5. ADMIN PANEL
 # ==========================================
 @bot.message_handler(
     commands=["admin"], func=lambda m: m.from_user.id == ADMIN_ID
@@ -437,6 +489,26 @@ def admin_stats(message):
   cursor.execute("SELECT COUNT(*) FROM episodes")
   episodes_count = cursor.fetchone()[0]
 
+  cursor.execute("SELECT SUM(views) FROM movies")
+  total_movie_views = cursor.fetchone()[0] or 0
+
+  cursor.execute("SELECT SUM(views) FROM episodes")
+  total_ep_views = cursor.fetchone()[0] or 0
+
+  total_views = total_movie_views + total_ep_views
+
+  cursor.execute(
+      "SELECT code, title, views FROM movies WHERE is_series = 0 ORDER BY views"
+      " DESC LIMIT 5"
+  )
+  top_movies = cursor.fetchall()
+
+  cursor.execute(
+      "SELECT code, title, views FROM movies WHERE is_series = 1 ORDER BY views"
+      " DESC LIMIT 5"
+  )
+  top_series = cursor.fetchall()
+
   conn.close()
 
   stats_text = (
@@ -444,8 +516,21 @@ def admin_stats(message):
       f"👤 Foydalanuvchilar: <b>{users_count}</b> ta\n"
       f"🎬 Kinolar: <b>{movies_count}</b> ta\n"
       f"📺 Seriallar: <b>{series_count}</b> ta\n"
-      f"🍿 Serial qismlari: <b>{episodes_count}</b> ta"
+      f"🍿 Serial qismlari: <b>{episodes_count}</b> ta\n"
+      f"👁 Jami ko'rishlar: <b>{total_views}</b> marta\n\n"
   )
+
+  if top_movies:
+    stats_text += "🔥 <b>Top 5 ta eng ko'p ko'rilgan kinolar:</b>\n"
+    for code, title, v in top_movies:
+      stats_text += f"• [{code}] {title} — <b>{v}</b> marta\n"
+    stats_text += "\n"
+
+  if top_series:
+    stats_text += "🔥 <b>Top 5 ta eng ko'p ko'rilgan seriallar:</b>\n"
+    for code, title, v in top_series:
+      stats_text += f"• [{code}] {title} — <b>{v}</b> marta\n"
+
   bot.send_message(message.chat.id, stats_text, parse_mode="HTML")
 
 
@@ -552,7 +637,7 @@ def handle_video_url(message):
 
 
 # ==========================================
-# 6. FOYDALANUVCHILAR VA BUYRUQLAR
+# 6. FOYDALANUVCHI HAMDA BUYRUQLAR
 # ==========================================
 @bot.message_handler(commands=["start"])
 def send_welcome(message):
@@ -682,7 +767,7 @@ def ad_info(message):
 
 
 # ==========================================
-# 7. QIDIRUV VA ADMIN MANTIQI
+# 7. QIDIRUV VA XABAR ISHLOVCHILAR
 # ==========================================
 @bot.message_handler(
     content_types=["text", "photo", "video", "document", "audio", "voice"]
@@ -836,6 +921,7 @@ def handle_all_messages(message):
 
     if movie:
       title, caption, file_id = movie
+      increment_movie_views(code)  # Ko'rishlar sonini oshirish
       bot.send_video(
           message.chat.id, file_id, caption=caption, parse_mode="HTML"
       )
@@ -894,23 +980,39 @@ def send_episode(call):
 
   conn = get_db_connection()
   cursor = conn.cursor()
+
+  # Qismning o'ziga xos caption'ini tekshiramiz
   cursor.execute(
-      "SELECT file_id FROM episodes WHERE movie_code = ? AND season_num = ? AND"
-      " episode_num = ?",
+      "SELECT file_id, caption FROM episodes WHERE movie_code = ? AND"
+      " season_num = ? AND episode_num = ?",
       (code, season_num, ep_num),
   )
   row = cursor.fetchone()
-  conn.close()
 
   if row:
-    file_id = row[0]
+    file_id, ep_caption = row
+
+    # Agar qismning caption'i bo'lmasa, movie caption'ini zaxira sifatida olamiz
+    if not ep_caption:
+      cursor.execute("SELECT caption FROM movies WHERE code = ?", (code,))
+      m_row = cursor.fetchone()
+      ep_caption = (
+          m_row[0]
+          if (m_row and m_row[0])
+          else f"🎬 Kod: {code} | 🍿 {ep_num}-Qism"
+      )
+
+    conn.close()
+
+    # Epizod ko'rishlar sonini va umumiy serial ko'rilishini oshirish
+    increment_episode_views(code, season_num, ep_num)
+
     bot.send_video(
-        call.message.chat.id,
-        file_id,
-        caption=f"🎬 Kod: {code} | 🍿 {ep_num}-Qism",
+        call.message.chat.id, file_id, caption=ep_caption, parse_mode="HTML"
     )
     bot.answer_callback_query(call.id)
   else:
+    conn.close()
     bot.answer_callback_query(call.id, "❌ Qism topilmadi!", show_alert=True)
 
 
@@ -956,35 +1058,32 @@ def back_to_seasons(call):
 
 
 # ==========================================
-# 9. ISHGA TUSHIRISH (XAVFSIZ VA BARQAROR REJIM)
+# 9. ISHGA TUSHIRISH
 # ==========================================
 if __name__ == "__main__":
-  # 1. Flask web serverini fonda ishga tushirish (Render/Heroku/Koyeb uchun)
   t = threading.Thread(target=run_web)
   t.daemon = True
   t.start()
 
-  # 2. Telegram Webhook'ni xavfsiz o'chirish va pauza berish
   try:
     bot.remove_webhook()
-    print(" Eski webhook muvaffaqiyatli o'chirildi.")
-    time.sleep(1.5)  # Telegram serveriga o'zgarishlar yetib borishi uchun
+    print("Eski webhook o'chirildi.")
+    time.sleep(1.5)
   except Exception as e:
     print("⚠️ Webhook tozalashda ogohlantirish:", e)
 
-  print("🚀 Bot muvaffaqiyatli ishga tushdi va xabarlarni kutmoqda...")
+  print("🚀 Bot muvaffaqiyatli ishga tushdi...")
 
-  # 3. Barqaror infinity polling sikli
   while True:
     try:
       bot.infinity_polling(
-          skip_pending=True,  # Bot o'chiq bo'lganda kelgan eski xabarlarni o'tkazib yuboradi
-          timeout=20,  # Tarmoq kutish vaqti
+          skip_pending=True,
+          timeout=20,
           long_polling_timeout=10,
       )
     except Exception as e:
       print(
-          f"⚠️ Polling xatoligi yuz berdi: {e}. 5 soniyadan so'ng qayta"
+          f"⚠️ Polling xatoligi: {e}. 5 soniyadan so'ng qayta"
           " ulanadi..."
       )
       time.sleep(5)
