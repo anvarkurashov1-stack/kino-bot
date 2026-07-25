@@ -12,7 +12,7 @@ from telebot import types
 # 1. SOZLAMALAR VA KONFIGURATSIYA
 # ==========================================
 BOT_TOKEN = os.environ.get(
-    "BOT_TOKEN", "8570550365:AAEgMz6KRm8vYZOqtBDZAMxbnJvRD-oIbXI"
+    "BOT_TOKEN", "8570550365:AAGpZdxSfWQwf4Z5-KgMvD6zLG8awXH7rjU"
 )
 WEATHER_API_KEY = "f6d4de7aafaecad64a98ca68a9f944be"
 
