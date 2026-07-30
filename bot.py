@@ -625,7 +625,10 @@ def handle_video_url(message):
     caption = "\n".join(lines[1:]).strip() if len(lines) > 1 else "Kino"
 
     sent_msg = bot.send_video(
-        message.chat.id, video_url, caption=caption if caption else "Kino"
+        message.chat.id,
+        video_url,
+        caption=caption if caption else "Kino",
+        protect_content=True,  # Share va saqlash taqiqlandi
     )
     file_id = sent_msg.video.file_id
 
@@ -923,7 +926,11 @@ def handle_all_messages(message):
       title, caption, file_id = movie
       increment_movie_views(code)  # Ko'rishlar sonini oshirish
       bot.send_video(
-          message.chat.id, file_id, caption=caption, parse_mode="HTML"
+          message.chat.id,
+          file_id,
+          caption=caption,
+          parse_mode="HTML",
+          protect_content=True,  # Share va saqlash taqiqlandi
       )
     else:
       bot.send_message(
@@ -1008,7 +1015,11 @@ def send_episode(call):
     increment_episode_views(code, season_num, ep_num)
 
     bot.send_video(
-        call.message.chat.id, file_id, caption=ep_caption, parse_mode="HTML"
+        call.message.chat.id,
+        file_id,
+        caption=ep_caption,
+        parse_mode="HTML",
+        protect_content=True,  # Share va saqlash taqiqlandi
     )
     bot.answer_callback_query(call.id)
   else:
