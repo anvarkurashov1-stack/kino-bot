@@ -1,4 +1,5 @@
 from datetime import datetime
+import io
 import os
 import sqlite3
 import threading
@@ -132,18 +133,13 @@ def init_db():
         )
     """)
 
-  # Eskidan bor bazalar uchun yangi ustunlarni avtomatik qo'shish (Auto-migration)
   try:
-    cursor.execute(
-        "ALTER TABLE movies ADD COLUMN views INTEGER DEFAULT 0"
-    )
+    cursor.execute("ALTER TABLE movies ADD COLUMN views INTEGER DEFAULT 0")
   except sqlite3.OperationalError:
     pass
 
   try:
-    cursor.execute(
-        "ALTER TABLE episodes ADD COLUMN views INTEGER DEFAULT 0"
-    )
+    cursor.execute("ALTER TABLE episodes ADD COLUMN views INTEGER DEFAULT 0")
   except sqlite3.OperationalError:
     pass
 
@@ -293,7 +289,8 @@ def get_movies_by_genre(genre_key):
   conn = get_db_connection()
   cursor = conn.cursor()
   cursor.execute(
-      "SELECT DISTINCT code, title FROM movies WHERE genre = ?", (genre_key,)
+      "SELECT DISTINCT code, title FROM movies WHERE genre LIKE ?",
+      (f"%{genre_key}%",),
   )
   rows = cursor.fetchall()
   conn.close()
@@ -315,6 +312,17 @@ def get_tashkent_weather():
   except Exception as e:
     print("Ob-havo xatolik:", e)
   return "Ma'lumot olish imkoni bo'lmadi"
+
+
+def extract_genres(text):
+  found = []
+  cap_lower = text.lower()
+  for key in GENRES.keys():
+    if key in cap_lower:
+      found.append(key)
+  if not found:
+    found.append("#boshqa")
+  return ",".join(found)
 
 
 def process_and_save_media(file_id, caption, message):
@@ -353,16 +361,17 @@ def process_and_save_media(file_id, caption, message):
       cursor.execute("SELECT id FROM movies WHERE code = ?", (code,))
       movie = cursor.fetchone()
 
+      detected_genres = extract_genres(caption)
+
       if not movie:
         cursor.execute(
             """
                     INSERT INTO movies (code, title, caption, genre, is_series, views)
                     VALUES (?, ?, ?, ?, 1, 0)
                 """,
-            (code, title, caption, "#serial"),
+            (code, title, caption, detected_genres),
         )
 
-      # Epizod va uning to'liq caption (matni) bazaga saqlanadi
       cursor.execute(
           """
                 INSERT INTO episodes (movie_code, season_num, episode_num, file_id, caption, views)
@@ -400,11 +409,7 @@ def process_and_save_media(file_id, caption, message):
         count = res if res else 0
         code = str(count + 1)
 
-      detected_genre = "#boshqa"
-      for key in GENRES.keys():
-        if key in cap_lower:
-          detected_genre = key
-          break
+      detected_genres = extract_genres(caption)
 
       lines = [line.strip() for line in caption.split("\n") if line.strip()]
       title = lines[0] if lines else "Kino"
@@ -416,7 +421,7 @@ def process_and_save_media(file_id, caption, message):
                 INSERT INTO movies (code, title, caption, file_id, genre, is_series, views)
                 VALUES (?, ?, ?, ?, ?, 0, 0)
             """,
-          (code, title, caption, file_id, detected_genre),
+          (code, title, caption, file_id, detected_genres),
       )
       conn.commit()
 
@@ -441,6 +446,8 @@ def admin_panel(message):
   markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
   markup.add(
       "📊 Statistika",
+      "👥 Obunachilar ma'lumoti",
+      "🎬 Kinoni boshqarish",
       "📢 Xabar tarqatish",
       "➕ Kanal qo'shish",
       "➖ Kanal o'chirish",
@@ -532,6 +539,65 @@ def admin_stats(message):
       stats_text += f"• [{code}] {title} — <b>{v}</b> marta\n"
 
   bot.send_message(message.chat.id, stats_text, parse_mode="HTML")
+
+
+@bot.message_handler(
+    func=lambda message: message.from_user.id == ADMIN_ID
+    and message.text == "👥 Obunachilar ma'lumoti"
+)
+def admin_users_info(message):
+  conn = get_db_connection()
+  cursor = conn.cursor()
+  cursor.execute(
+      "SELECT user_id, first_name, username, joined_at FROM users ORDER BY"
+      " joined_at DESC"
+  )
+  users = cursor.fetchall()
+  conn.close()
+
+  if not users:
+    bot.send_message(
+        message.chat.id, "⚠️ Hozircha hech qanday foydalanuvchi yo'q."
+    )
+    return
+
+  text_file_content = "ID | Ism | Username | Qoshilgan vaqti\n" + "-" * 50 + "\n"
+  preview_text = "👥 <b>Songgi obunachilar (Jami: " + str(len(users)) + "):</b>\n\n"
+
+  for idx, (u_id, fname, uname, jtime) in enumerate(users):
+    username_str = f"@{uname}" if uname else "Mavjud emas"
+    fname_str = fname if fname else "Noma'lum"
+    line = f"{u_id} | {fname_str} | {username_str} | {jtime}\n"
+    text_file_content += line
+
+    if idx < 10:
+      preview_text += (
+          f"• <b>ID:</b> <code>{u_id}</code> | {fname_str} ({username_str}) - "
+          f"{jtime}\n"
+      )
+
+  bot.send_message(message.chat.id, preview_text, parse_mode="HTML")
+
+  # To'liq ro'yxatni .txt fayl qilib yuborish
+  file_data = io.BytesIO(text_file_content.encode("utf-8"))
+  file_data.name = "obunachilar.txt"
+  bot.send_document(
+      message.chat.id, file_data, caption="📁 Barcha obunachilar ro'yxati"
+  )
+
+
+@bot.message_handler(
+    func=lambda message: message.from_user.id == ADMIN_ID
+    and message.text == "🎬 Kinoni boshqarish"
+)
+def admin_manage_movie_start(message):
+  ADMIN_STATES[ADMIN_ID] = "waiting_for_manage_code"
+  bot.send_message(
+      message.chat.id,
+      "🎬 Boshqarmoqchi bo'lgan kinongiz yoki serialingiz <b>kodini</b>"
+      " kiriting:",
+      parse_mode="HTML",
+  )
 
 
 @bot.message_handler(
@@ -628,7 +694,7 @@ def handle_video_url(message):
         message.chat.id,
         video_url,
         caption=caption if caption else "Kino",
-        protect_content=True,  # Share va saqlash taqiqlandi
+        protect_content=True,
     )
     file_id = sent_msg.video.file_id
 
@@ -684,7 +750,8 @@ def send_welcome(message):
       f"🇺🇿 Toshkent vaqti: {current_time}\n"
       f"🌤 Toshkent ob-havosi: {weather}\n\n"
       f"🎬 Yangi kinolar kanali: {TELEGRAM_LINK}\n\n"
-      "Kino yoki serial qidirish uchun shunchaki uning raqamli kodini yuboring."
+      "Kino yoki serial qidirish uchun uning <b>kodi</b> yoki <b>nomi</b>ni"
+      " yuboring."
   )
 
   bot.send_message(
@@ -708,8 +775,8 @@ def callback_check_sub(call):
       pass
     bot.send_message(
         call.message.chat.id,
-        "✅ Rahmat! Kanallarga muvaffaqiyatli a'zo bo'ldingiz.\nKino kodini"
-        " yuborishingiz mumkin.",
+        "✅ Rahmat! Kanallarga muvaffaqiyatli a'zo bo'ldingiz.\nKino kodi yoki"
+        " nomini yuborishingiz mumkin.",
     )
 
 
@@ -783,6 +850,7 @@ def handle_all_messages(message):
 
   add_user(user_id, message.from_user.first_name, message.from_user.username)
 
+  # Admin holatlarini tekshirish
   if user_id == ADMIN_ID and user_id in ADMIN_STATES:
     state = ADMIN_STATES[user_id]
 
@@ -840,6 +908,103 @@ def handle_all_messages(message):
       )
       return
 
+    elif state == "waiting_for_manage_code":
+      code = message.text.strip()
+      conn = get_db_connection()
+      cursor = conn.cursor()
+      cursor.execute(
+          "SELECT code, title, caption FROM movies WHERE code = ?", (code,)
+      )
+      movie = cursor.fetchone()
+      conn.close()
+
+      if not movie:
+        bot.send_message(
+            message.chat.id,
+            "❌ Bunday kodli kino topilmadi. Qayta urinib ko'ring.",
+        )
+        ADMIN_STATES.pop(user_id, None)
+        return
+
+      ADMIN_STATES[user_id] = f"managing_{code}"
+      markup = types.InlineKeyboardMarkup(row_width=1)
+      markup.add(
+          types.InlineKeyboardButton(
+              "✏️ Video matnini tahrirlash", callback_data=f"editcap_{code}"
+          ),
+          types.InlineKeyboardButton(
+              "🔢 Kodni o'zgartirish (Recode)", callback_data=f"recode_{code}"
+          ),
+          types.InlineKeyboardButton(
+              "🗑 Kinoni o'chirish", callback_data=f"delmovie_{code}"
+          ),
+      )
+      bot.send_message(
+          message.chat.id,
+          f"🎬 <b>Kino topildi:</b> {movie[1]}\n🔑 <b>Kodi:</b>"
+          f" {movie[0]}\n\nTanlang:",
+          reply_markup=markup,
+          parse_mode="HTML",
+      )
+      return
+
+    elif state.startswith("editing_caption_"):
+      code = state.replace("editing_caption_", "")
+      new_caption = message.text
+      detected_genres = extract_genres(new_caption)
+
+      conn = get_db_connection()
+      cursor = conn.cursor()
+      cursor.execute(
+          "UPDATE movies SET caption = ?, genre = ? WHERE code = ?",
+          (new_caption, detected_genres, code),
+      )
+      conn.commit()
+      conn.close()
+
+      ADMIN_STATES.pop(user_id, None)
+      bot.send_message(
+          message.chat.id, f"✅ Kod: <code>{code}</code> video matni tahrirlandi!"
+      )
+      return
+
+    elif state.startswith("recoding_"):
+      old_code = state.replace("recoding_", "")
+      new_code = message.text.strip()
+
+      conn = get_db_connection()
+      cursor = conn.cursor()
+
+      cursor.execute("SELECT id FROM movies WHERE code = ?", (new_code,))
+      if cursor.fetchone():
+        bot.send_message(
+            message.chat.id,
+            f"❌ <code>{new_code}</code> kodi allaqachon mavjud! Boshqa kod"
+            " kiriting.",
+            parse_mode="HTML",
+        )
+        conn.close()
+        return
+
+      cursor.execute(
+          "UPDATE movies SET code = ? WHERE code = ?", (new_code, old_code)
+      )
+      cursor.execute(
+          "UPDATE episodes SET movie_code = ? WHERE movie_code = ?",
+          (new_code, old_code),
+      )
+      conn.commit()
+      conn.close()
+
+      ADMIN_STATES.pop(user_id, None)
+      bot.send_message(
+          message.chat.id,
+          f"✅ Kino kodi almashtirildi!\nEski kod: <code>{old_code}</code> ➡️"
+          f" Yangi kod: <code>{new_code}</code>",
+          parse_mode="HTML",
+      )
+      return
+
   unsubscribed = check_subscription(user_id)
   if unsubscribed:
     bot.send_message(
@@ -851,29 +1016,30 @@ def handle_all_messages(message):
     return
 
   if message.text:
-    code = message.text.strip()
+    search_query = message.text.strip()
 
     conn = get_db_connection()
     cursor = conn.cursor()
 
+    # 1. Kod bo'yicha serial qismlarini tekshirish
     cursor.execute(
         "SELECT DISTINCT season_num FROM episodes WHERE movie_code = ? ORDER BY"
         " season_num ASC",
-        (code,),
+        (search_query,),
     )
     seasons = cursor.fetchall()
 
     if seasons:
-      cursor.execute("SELECT title FROM movies WHERE code = ?", (code,))
+      cursor.execute("SELECT title FROM movies WHERE code = ?", (search_query,))
       m_row = cursor.fetchone()
-      s_title = m_row[0] if m_row else f"Kino / Serial #{code}"
+      s_title = m_row[0] if m_row else f"Kino / Serial #{search_query}"
 
       if len(seasons) == 1:
         s_num = seasons[0][0]
         cursor.execute(
             "SELECT episode_num FROM episodes WHERE movie_code = ? AND"
             " season_num = ? ORDER BY episode_num ASC",
-            (code, s_num),
+            (search_query, s_num),
         )
         episodes = cursor.fetchall()
 
@@ -881,7 +1047,7 @@ def handle_all_messages(message):
         buttons = [
             types.InlineKeyboardButton(
                 f"🎬 {ep_num}-Qism",
-                callback_data=f"play_{code}_{s_num}_{ep_num}",
+                callback_data=f"play_{search_query}_{s_num}_{ep_num}",
             )
             for (ep_num,) in episodes
         ]
@@ -889,7 +1055,8 @@ def handle_all_messages(message):
 
         bot.send_message(
             message.chat.id,
-            f"🎬 <b>{s_title} (Kodi: {code})</b>\n\nKerakli qismni tanlang 👇",
+            f"🎬 <b>{s_title} (Kodi: {search_query})</b>\n\nKerakli qismni tanlang"
+            " 👇",
             reply_markup=markup,
             parse_mode="HTML",
         )
@@ -897,7 +1064,7 @@ def handle_all_messages(message):
         markup = types.InlineKeyboardMarkup(row_width=2)
         buttons = [
             types.InlineKeyboardButton(
-                f"🎬 {s_num}-Fasl", callback_data=f"season_{code}_{s_num}"
+                f"🎬 {s_num}-Fasl", callback_data=f"season_{search_query}_{s_num}"
             )
             for (s_num,) in seasons
         ]
@@ -905,8 +1072,8 @@ def handle_all_messages(message):
 
         bot.send_message(
             message.chat.id,
-            f"🎬 <b>{s_title} (Kodi: {code})</b>\n\nIltimos, kerakli faslni tanlang"
-            " 👇",
+            f"🎬 <b>{s_title} (Kodi: {search_query})</b>\n\nIltimos, kerakli"
+            " faslni tanlang 👇",
             reply_markup=markup,
             parse_mode="HTML",
         )
@@ -914,35 +1081,104 @@ def handle_all_messages(message):
       conn.close()
       return
 
+    # 2. Kod bo'yicha to'g'ridan-to'g'ri kinoni tekshirish
     cursor.execute(
         "SELECT title, caption, file_id FROM movies WHERE code = ? AND"
         " is_series = 0",
-        (code,),
+        (search_query,),
     )
     movie = cursor.fetchone()
-    conn.close()
 
     if movie:
       title, caption, file_id = movie
-      increment_movie_views(code)  # Ko'rishlar sonini oshirish
+      increment_movie_views(search_query)
       bot.send_video(
           message.chat.id,
           file_id,
           caption=caption,
           parse_mode="HTML",
-          protect_content=True,  # Share va saqlash taqiqlandi
+          protect_content=True,
       )
+      conn.close()
+      return
+
+    # 3. Nomi bo'yicha kino yoki serialni qidirish
+    cursor.execute(
+        "SELECT code, title FROM movies WHERE title LIKE ?",
+        (f"%{search_query}%",),
+    )
+    found_movies = cursor.fetchall()
+    conn.close()
+
+    if found_movies:
+      res_text = (
+          f"🔍 <b>\"{search_query}\" bo'yicha topilgan kinolar:</b>\n\n"
+      )
+      for c_code, c_title in found_movies:
+        res_text += f"🔑 Kod: <code>{c_code}</code> — {c_title}\n"
+      res_text += (
+          "\n<i>Kinoni ko'rish uchun uning kodi (raqami)ni yuboring.</i>"
+      )
+      bot.send_message(message.chat.id, res_text, parse_mode="HTML")
     else:
       bot.send_message(
           message.chat.id,
-          "❌ Bunday kodli kino yoki serial topilmadi. Kodingizni qayta"
-          " tekshiring.",
+          "❌ Bunday kodli yoki nomli kino topilmadi. Qayta tekshirib ko'ring.",
       )
 
 
 # ==========================================
 # 8. CALLBACK HANDLERLAR
 # ==========================================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("editcap_"))
+def callback_edit_caption(call):
+  if call.from_user.id != ADMIN_ID:
+    return
+  code = call.data.replace("editcap_", "")
+  ADMIN_STATES[ADMIN_ID] = f"editing_caption_{code}"
+  bot.send_message(
+      call.message.chat.id,
+      f"✏️ Kod: <code>{code}</code> uchun yangi video matnini (caption)"
+      " yuboring:",
+      parse_mode="HTML",
+  )
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("recode_"))
+def callback_recode(call):
+  if call.from_user.id != ADMIN_ID:
+    return
+  code = call.data.replace("recode_", "")
+  ADMIN_STATES[ADMIN_ID] = f"recoding_{code}"
+  bot.send_message(
+      call.message.chat.id,
+      f"🔢 Eski kod: <code>{code}</code>\nYangi kodni kiriting:",
+      parse_mode="HTML",
+  )
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("delmovie_"))
+def callback_delete_movie(call):
+  if call.from_user.id != ADMIN_ID:
+    return
+  code = call.data.replace("delmovie_", "")
+
+  conn = get_db_connection()
+  cursor = conn.cursor()
+  cursor.execute("DELETE FROM movies WHERE code = ?", (code,))
+  cursor.execute("DELETE FROM episodes WHERE movie_code = ?", (code,))
+  conn.commit()
+  conn.close()
+
+  ADMIN_STATES.pop(ADMIN_ID, None)
+  bot.edit_message_text(
+      chat_id=call.message.chat.id,
+      message_id=call.message.message_id,
+      text=f"🗑 Kod: <code>{code}</code> muvaffaqiyatli o'chirib tashlandi!",
+      parse_mode="HTML",
+  )
+
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith("season_"))
 def show_episodes(call):
   _, code, season_num = call.data.split("_")
@@ -988,7 +1224,6 @@ def send_episode(call):
   conn = get_db_connection()
   cursor = conn.cursor()
 
-  # Qismning o'ziga xos caption'ini tekshiramiz
   cursor.execute(
       "SELECT file_id, caption FROM episodes WHERE movie_code = ? AND"
       " season_num = ? AND episode_num = ?",
@@ -999,7 +1234,6 @@ def send_episode(call):
   if row:
     file_id, ep_caption = row
 
-    # Agar qismning caption'i bo'lmasa, movie caption'ini zaxira sifatida olamiz
     if not ep_caption:
       cursor.execute("SELECT caption FROM movies WHERE code = ?", (code,))
       m_row = cursor.fetchone()
@@ -1011,7 +1245,6 @@ def send_episode(call):
 
     conn.close()
 
-    # Epizod ko'rishlar sonini va umumiy serial ko'rilishini oshirish
     increment_episode_views(code, season_num, ep_num)
 
     bot.send_video(
@@ -1019,7 +1252,7 @@ def send_episode(call):
         file_id,
         caption=ep_caption,
         parse_mode="HTML",
-        protect_content=True,  # Share va saqlash taqiqlandi
+        protect_content=True,
     )
     bot.answer_callback_query(call.id)
   else:
@@ -1093,8 +1326,5 @@ if __name__ == "__main__":
           long_polling_timeout=10,
       )
     except Exception as e:
-      print(
-          f"⚠️ Polling xatoligi: {e}. 5 soniyadan so'ng qayta"
-          " ulanadi..."
-      )
+      print(f"⚠️ Polling xatoligi: {e}. 5 soniyadan so'ng qayta ulanadi...")
       time.sleep(5)
